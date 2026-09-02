@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kafeterya Personel Yönetim Sistemi</title>
+
+<!--
+================================================================================
+  GÜVENLİK UYARISI — MUTLAKA OKUYUN
+================================================================================
+  1) SABİT GİRİŞ (admin / 1234)
+     checkLogin() içinde sabit kodlanmış bir yönetici girişi vardır. Bu bypass
+     istek üzerine korunmuştur ancak PRODUCTION ORTAMINDA KULLANILMAMALIDIR.
+     Tarayıcı kaynak kodunu gören herkes bu bilgiyi okuyabilir.
+
+  2) DÜZ METİN ŞİFRE
+     'users' tablosunda şifreler düz metin tutulmakta ve .eq('password', pass)
+     ile karşılaştırılmaktadır. Bu, anon key ile 'users' tablosunu okuyabilen
+     herkesin tüm şifreleri görebilmesi demektir.
+
+  3) SUPABASE AUTH'A GEÇİŞ İÇİN YAPILMASI GEREKENLER
+     a. Supabase panelinde Authentication > Providers > Email aktif edilir.
+     b. Kullanıcılar 'users' tablosu yerine auth.users üzerinde oluşturulur:
+           await _supabase.auth.signUp({ email, password })
+     c. Giriş:
+           const { data, error } = await _supabase.auth.signInWithPassword({
+               email, password
+           });
+     d. Rol bilgisi için auth.users.id'ye FK veren bir 'profiles' tablosu
+        kullanılır (bkz. dosya sonundaki SQL bloğu).
+     e. 'users' tablosu ve içindeki düz metin şifreler tamamen silinir.
+     f. Tüm RLS policy'leri auth.uid() / auth.role() üzerinden yazılır,
+        böylece anon kullanıcı yazma yetkisi alamaz.
+     g. Oturum kontrolü:
+           const { data: { session } } = await _supabase.auth.getSession();
+
+  4) ANON KEY
+     Aşağıdaki SUPABASE_ANON_KEY istemci tarafında açıkta durur; anon key
+     "public" bir anahtardır ve bu normaldir. ANCAK bu ancak ve ancak tüm
+     tablolarda RLS (Row Level Security) AÇIK ve policy'ler doğru yazılmışsa
+     güvenlidir. RLS kapalıysa anon key ile tüm veriler okunabilir/silinebilir.
+     Gerekli SQL komutları dosyanın en sonundadır.
+================================================================================
+-->
+
+<!-- Supabase Kütüphanesi -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Arial, sans-serif; background: #f4f6f9; color: #222; }
+
+/* GİRİŞ EKRANI */
+#loginScreen { display: flex; justify-content: center; align-items: center; height: 100vh; background: linear-gradient(135deg, #1f4e78, #2c3e50); }
+.login-card { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); width: 420px; text-align: center; }
+.login-card img { height: 140px; width: auto; object-fit: contain; margin-bottom: 20px; }
+.login-card h2 { margin: 0 0 20px; color: #1f4e78; font-size: 22px; }
+
+/* UYGULAMA EKRANLARI */
+#adminAppScreen, #staffAppScreen { display: none; }
+header { background: #1f4e78; color: white; padding: 20px 30px; display: flex; justify-content: space-between; align-items: center; }
+.header-left { display: flex; align-items: center; gap: 15px; }
+.header-left img { height: 45px; width: auto; border-radius: 6px; background: white; padding: 3px; object-fit: contain; }
+header h1 { margin: 0; font-size: 25px; }
+.container { padding: 25px; max-width: 1500px; margin: auto; }
+.dashboard { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px; }
+.card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+.card h3 { margin: 0 0 10px; font-size: 15px; color: #666; }
+.card strong { font-size: 30px; color: #1f4e78; }
+.menu { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+button { border: 0; padding: 11px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; }
+.btn-primary { background: #1f4e78; color: white; }
+.btn-success { background: #28a745; color: white; }
+.btn-danger { background: #dc3545; color: white; }
+.btn-warning { background: #ffc107; color: #222; }
+.btn-sm { padding: 6px 10px; font-size: 12px; }
+.search { width: 100%; padding: 13px; border: 1px solid #ccc; border-radius: 6px; margin-bottom: 20px; }
+.section { background: white; padding: 20px; border-radius: 10px; margin-bottom: 25px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+.section h2 { margin-top: 0; }
+.cafeteria-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px; }
+.cafeteria { border: 1px solid #ddd; border-radius: 8px; padding: 15px; background: #fafafa; }
+.cafeteria h3 { margin-top: 0; color: #1f4e78; }
+.cafeteria.clickable { cursor: pointer; transition: box-shadow .15s, border-color .15s; }
+.cafeteria.clickable:hover { border-color: #1f4e78; box-shadow: 0 3px 10px rgba(31,78,120,.2); }
+.cafeteria.clickable:focus { outline: 3px solid #ffc107; outline-offset: 2px; }
+.badge { background: #1f4e78; color: white; border-radius: 15px; padding: 4px 9px; font-size: 12px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 12px; border-bottom: 1px solid #ddd; text-align: left; }
+th { background: #1f4e78; color: white; }
+.modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); justify-content: center; align-items: center; z-index: 1000; }
+.modal-content { background: white; padding: 25px; width: 450px; max-width: 95%; max-height: 90vh; overflow-y: auto; border-radius: 10px; }
+.modal-content.wide { width: 620px; }
+.modal-content h2 { margin-top: 0; }
+input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px solid #ccc; border-radius: 5px; }
+.actions { display: flex; gap: 8px; }
+.loading { font-size: 14px; color: #ffc107; font-weight: bold; }
+.notice { display: none; padding: 14px 16px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; line-height: 1.5; }
+.notice.warn { display: block; background: #fff3cd; border: 1px solid #ffe08a; color: #6b5200; }
+.notice.error { display: block; background: #f8d7da; border: 1px solid #f1aeb5; color: #7a1c26; }
+.notice code { background: rgba(0,0,0,.07); padding: 1px 5px; border-radius: 3px; }
+.detail-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid #eee; }
+.detail-row:last-child { border-bottom: 0; }
+.detail-row .who { min-width: 0; }
+.detail-row .who strong { display: block; }
+.detail-row .who small { color: #666; }
+.empty { color: #666; font-style: italic; padding: 12px 0; }
+@media(max-width:800px) { .dashboard { grid-template-columns: repeat(2, 1fr); } }
+@media(max-width:500px) { .dashboard { grid-template-columns: 1fr; } }
+</style>
+</head>
+
+<body>
+
+<!-- GİRİŞ EKRANI -->
+<div id="loginScreen">
+    <div class="login-card">
+        <img src="logo.png" alt="Logo">
+        <h2>Kafeterya Giriş Sistemi</h2>
+        <input type="text" id="loginUsername" placeholder="Kullanıcı Adı" style="text-align:center;">
+        <input type="password" id="loginPassword" placeholder="Şifre" style="text-align:center;">
+        <button class="btn-primary" style="width:100%; padding:12px;" onclick="checkLogin()">Giriş Yap</button>
+        <p id="loginError" style="color:#dc3545; font-size:13px; margin-top:10px; display:none;">Hatalı kullanıcı adı veya şifre!</p>
+    </div>
+</div>
+
+<!-- YÖNETİCİ PANELİ -->
+<div id="adminAppScreen">
+    <header>
+        <div class="header-left">
+            <img src="logo.png" alt="Logo">
+            <h1>Yönetici Paneli — Kafeterya Sistemi</h1>
+        </div>
+        <div style="display: flex; align-items: center; gap: 15px;">
+            <span id="adminConnectionStatus" class="loading">Bağlanıyor...</span>
+            <button class="btn-danger btn-sm" onclick="logout()">Çıkış Yap</button>
+        </div>
+    </header>
+
+    <div class="container">
+        <div id="adminNotice" class="notice"></div>
+
+        <div class="dashboard">
+            <div class="card">
+                <h3>Toplam Kafeterya</h3>
+                <strong id="totalCafeterias">0</strong>
+            </div>
+            <div class="card">
+                <h3>Toplam Personel</h3>
+                <strong id="totalPersonnel">0</strong>
+            </div>
+            <div class="card">
+                <h3>Görev Yeri Atanan</h3>
+                <strong id="assignedPersonnel">0</strong>
+            </div>
+            <div class="card">
+                <h3>Boşta Personel</h3>
+                <strong id="unassignedPersonnel">0</strong>
+            </div>
+        </div>
+
+        <div class="menu">
+            <button class="btn-primary" onclick="openPersonnelModal()">➕ Personel Ekle</button>
+            <button class="btn-success" onclick="openTransferModal()">🔄 Yer Değiştir</button>
+            <button class="btn-warning" onclick="openUserModal()">👤 Yeni Kullanıcı Ekle</button>
+            <button class="btn-warning" onclick="exportExcel()">📥 Excel/CSV Aktar</button>
+        </div>
+
+        <div class="section">
+            <h2>👤 Personel Listesi</h2>
+            <input class="search" id="personSearch" placeholder="Personel adı veya kafeterya ara..." oninput="renderPersonnel()">
+            <div style="overflow-x:auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Personel</th>
+                            <th>Görev</th>
+                            <th>Kafeterya</th>
+                            <th>İşlem</th>
+                        </tr>
+                    </thead>
+                    <tbody id="personnelTable"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>🏢 Kafeteryalar</h2>
+            <input class="search" id="cafSearch" placeholder="Kafeterya ara..." oninput="renderCafeterias()">
+            <div class="cafeteria-grid" id="cafeteriaGrid"></div>
+        </div>
+    </div>
+</div>
+
+<!-- PERSONEL PANELİ -->
+<div id="staffAppScreen">
+    <header>
+        <div class="header-left">
+            <img src="logo.png" alt="Logo">
+            <h1>Personel Görüntüleme Ekranı</h1>
+        </div>
+        <div style="display: flex; align-items: center; gap: 15px;">
+            <span id="staffConnectionStatus" class="loading">Bağlanıyor...</span>
+            <button class="btn-danger btn-sm" onclick="logout()">Çıkış Yap</button>
+        </div>
+    </header>
+    <div class="container">
+        <div id="staffNotice" class="notice"></div>
+        <div class="section">
+            <h2>🏢 Kafeterya ve Çalışma Durumları</h2>
+            <input class="search" id="staffCafSearch" placeholder="Kafeterya ara..." oninput="renderStaffCafeterias()">
+            <div class="cafeteria-grid" id="staffCafeteriaGrid"></div>
+        </div>
+    </div>
+</div>
+
+<!-- PERSONEL EKLEME MODALI -->
+<div class="modal" id="personnelModal">
+    <div class="modal-content">
+        <h2>Yeni Personel</h2>
+        <label>Personel Adı Soyadı</label>
+        <input id="personName" placeholder="Örn: Ahmet Yılmaz">
+        <label>Görevi</label>
+        <input id="personJob" placeholder="Örn: Kafeterya Personeli">
+        <label>Kafeterya</label>
+        <select id="personCafeteria"></select>
+        <div class="actions">
+            <button class="btn-success" onclick="addPersonnel()">Kaydet</button>
+            <button onclick="closeModal('personnelModal')">İptal</button>
+        </div>
+    </div>
+</div>
+
+<!-- YER DEĞİŞTİRME MODALI -->
+<div class="modal" id="transferModal">
+    <div class="modal-content">
+        <h2>🔄 Personel Yer Değişikliği</h2>
+        <label>Personel</label>
+        <select id="transferPersonnelSelect"></select>
+        <label>Yeni Kafeterya</label>
+        <select id="transferCafeteria"></select>
+        <div class="actions">
+            <button class="btn-success" onclick="transferPersonnel()">Değişikliği Kaydet</button>
+            <button onclick="closeModal('transferModal')">İptal</button>
+        </div>
+    </div>
+</div>
+
+<!-- KULLANICI EKLEME MODALI -->
+<div class="modal" id="userModal">
+    <div class="modal-content">
+        <h2>Yeni Sistem Kullanıcısı Ekle</h2>
+        <label>Kullanıcı Adı</label>
+        <input id="newUsername" placeholder="Örn: ahmet_yonetici">
+        <label>Şifre</label>
+        <input type="password" id="newPassword" placeholder="Şifre belirleyin">
+        <label>Yetki Türü</label>
+        <select id="newRole">
+            <option value="admin">Yönetici (Tam Yetki)</option>
+            <option value="staff">Personel (Sadece Görüntüleme)</option>
+        </select>
+        <div class="actions">
+            <button class="btn-success" onclick="addNewUser()">Kullanıcıyı Kaydet</button>
+            <button onclick="closeModal('userModal')">İptal</button>
+        </div>
+    </div>
+</div>
+
+<!-- KAFETERYA DETAY MODALI -->
+<div class="modal" id="cafeteriaModal">
+    <div class="modal-content wide">
+        <h2 id="cafeteriaModalTitle">Kafeterya</h2>
+        <p style="margin-top:-8px;">Personel sayısı: <strong id="cafeteriaModalCount">0</strong></p>
+        <div id="cafeteriaModalBody"></div>
+        <div class="actions" style="margin-top:18px;">
+            <button onclick="closeModal('cafeteriaModal')">Kapat</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    /* ------------------------------------------------------------------
+       YAPILANDIRMA
+       ------------------------------------------------------------------ */
+    const SUPABASE_URL = "https://hqfrptvrobvzxdauyorp.supabase.co";
+    // Anon key public'tir; güvenlik RLS ile sağlanır (dosya başındaki uyarı + sondaki SQL).
+    const SUPABASE_ANON_KEY = "sb_publishable_ZfBZAmqAJlPEB-RoUmXlYQ_obYf1sK3";
+    const _supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // Tablo adları
+    const TBL_PERSONNEL = "personnel";
+    const TBL_USERS = "users";
+
+    // Kolon adları TEK yerde. Supabase tablo şeması farklıysa SADECE burayı değiştirin.
+    const COLS = {
+        id: "id",
+        name: "Personel Adı Soyadı",
+        job: "Görevi",
+        cafeteria: "Kafeterya"
+    };
+
+    // Kafeterya sayısı TEK yerde.
+    const CAFETERIA_COUNT = 70;
+
+    let personnel = [];
+    const cafeterias = [];
+    for (let i = 1; i <= CAFETERIA_COUNT; i++) {
+        cafeterias.push({ id: i, name: "Kafeterya " + i });
+    }
+
+    /* ------------------------------------------------------------------
+       YARDIMCI FONKSİYONLAR
+       ------------------------------------------------------------------ */
+
+    // Tüm dinamik değerler innerHTML'e basılmadan önce buradan geçer (XSS koruması).
+    function escapeHtml(value) {
+        if (value === null || value === undefined) return "";
+        return String(value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+    }
+
+    // "Kafeterya" alanı text de integer da olabilir. Atanmamış kabul edilenler:
+    // null, undefined, "", "   ", 0, "0", sayı olmayan değerler.
+    function parseCafeteriaId(value) {
+        if (value === null || value === undefined) return null;
+        if (typeof value === "string" && value.trim() === "") return null;
+        const n = Number(value);
+        if (!Number.isFinite(n) || n <= 0) return null;
+        return n;
+    }
+
+    function isAssigned(p) {
+        return parseCafeteriaId(p[COLS.cafeteria]) !== null;
+    }
+
+    function getCafeteriaName(value) {
+        const id = parseCafeteriaId(value);
+        if (id === null) return "Atanmamış";
+        const c = cafeterias.find(c => c.id === id);
+        return c ? c.name : ("Bilinmiyor (" + id + ")");
+    }
+
+    function personName(p) { return p && p[COLS.name] != null ? String(p[COLS.name]) : ""; }
+    function personJob(p) { return p && p[COLS.job] != null ? String(p[COLS.job]) : ""; }
+
+    function showNotice(target, type, html) {
+        const el = document.getElementById(target === "staff" ? "staffNotice" : "adminNotice");
+        if (!el) return;
+        el.className = "notice " + type;
+        el.innerHTML = html;
+    }
+
+    function clearNotice(target) {
+        const el = document.getElementById(target === "staff" ? "staffNotice" : "adminNotice");
+        if (!el) return;
+        el.className = "notice";
+        el.innerHTML = "";
+    }
+
+    function setStatus(target, text, color) {
+        const el = document.getElementById(target === "staff" ? "staffConnectionStatus" : "adminConnectionStatus");
+        if (!el) return;
+        el.textContent = text;
+        el.style.color = color;
+    }
+
+    function describeError(error) {
+        if (!error) return "";
+        const parts = [];
+        if (error.message) parts.push(escapeHtml(error.message));
+        if (error.code) parts.push("kod: <code>" + escapeHtml(error.code) + "</code>");
+        if (error.hint) parts.push("ipucu: " + escapeHtml(error.hint));
+        if (error.details) parts.push("detay: " + escapeHtml(error.details));
+        return parts.join(" — ");
+    }
+
+    /* ------------------------------------------------------------------
+       MODAL YÖNETİMİ (dış tıklama + ESC tüm modallar için)
+       ------------------------------------------------------------------ */
+    function openModal(id) {
+        const el = document.getElementById(id);
+        if (el) el.style.display = "flex";
+    }
+
+    function closeModal(id) {
+        const el = document.getElementById(id);
+        if (el) el.style.display = "none";
+    }
+
+    function closeTopModal() {
+        const open = Array.from(document.querySelectorAll(".modal"))
+            .filter(m => m.style.display === "flex");
+        if (open.length) open[open.length - 1].style.display = "none";
+    }
+
+    document.querySelectorAll(".modal").forEach(m => {
+        m.addEventListener("mousedown", function (e) {
+            if (e.target === m) m.style.display = "none"; // sadece arka plana tıklamada kapat
+        });
+    });
+
+    document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") closeTopModal();
+    });
+
+    /* ------------------------------------------------------------------
+       GİRİŞ / OTURUM
+       ------------------------------------------------------------------ */
+    async function checkLogin() {
+        const user = document.getElementById("loginUsername").value.trim();
+        const pass = document.getElementById("loginPassword").value.trim();
+        const errEl = document.getElementById("loginError");
+        errEl.style.display = "none";
+
+        // GÜVENLİK: sabit kodlanmış bypass — dosya başındaki uyarıya bakınız.
+        if (user === "admin" && pass === "1234") {
+            openDashboard("admin");
+            return;
+        }
+
+        try {
+            // GÜVENLİK: düz metin şifre karşılaştırması — dosya başındaki uyarıya bakınız.
+            const { data, error } = await _supabase
+                .from(TBL_USERS).select("*")
+                .eq("username", user).eq("password", pass);
+
+            if (error) {
+                console.error("Giriş sorgusu hatası:", error);
+                errEl.textContent = "Giriş yapılamadı (bağlantı/yetki hatası): " + (error.message || "bilinmeyen hata");
+                errEl.style.display = "block";
+                return;
+            }
+
+            if (data && data.length > 0) {
+                openDashboard(data[0].role);
+            } else {
+                errEl.textContent = "Hatalı kullanıcı adı veya şifre!";
+                errEl.style.display = "block";
+            }
+        } catch (err) {
+            console.error(err);
+            errEl.textContent = "Sunucuya ulaşılamadı: " + (err && err.message ? err.message : err);
+            errEl.style.display = "block";
+        }
+    }
+
+    function openDashboard(role) {
+        document.getElementById("loginScreen").style.display = "none";
+        if (role === "admin") {
+            document.getElementById("adminAppScreen").style.display = "block";
+            document.getElementById("totalCafeterias").textContent = CAFETERIA_COUNT;
+            loadData();
+        } else {
+            document.getElementById("staffAppScreen").style.display = "block";
+            loadStaffData();
+        }
+    }
+
+    function logout() {
+        document.getElementById("adminAppScreen").style.display = "none";
+        document.getElementById("staffAppScreen").style.display = "none";
+        document.getElementById("loginScreen").style.display = "flex";
+        document.getElementById("loginUsername").value = "";
+        document.getElementById("loginPassword").value = "";
+        document.getElementById("loginError").style.display = "none";
+        personnel = [];
+        clearNotice("admin");
+        clearNotice("staff");
+    }
+
+    document.getElementById("loginPassword").addEventListener("keypress", function (event) {
+        if (event.key === "Enter") checkLogin();
+    });
+
+    /* ------------------------------------------------------------------
+       VERİ YÜKLEME + TEŞHİS
+       ------------------------------------------------------------------ */
+
+    // error null + data [] durumu "sessiz başarısızlık"tır. Genelde SELECT policy yokluğu
+    // (RLS açık, policy yok) veya gerçekten boş tablo demektir. İkisini ayırt edip uyarıyoruz.
+    function diagnoseFetch(target, rows, error) {
+        if (error) {
+            setStatus(target, "● Bağlantı hatası", "#dc3545");
+            showNotice(target, "error",
+                "<strong>Veri çekilemedi.</strong> " + describeError(error) +
+                "<br>Muhtemel sebep: <code>" + TBL_PERSONNEL + "</code> tablosunda <strong>SELECT policy</strong> yok " +
+                "veya tablo adı hatalı. Dosyanın sonundaki SQL bloğunu çalıştırın.");
+            return false;
+        }
+
+        setStatus(target, "● Bağlandı", "#28a745");
+
+        if (!rows.length) {
+            showNotice(target, "warn",
+                "<strong>Sorgu başarılı fakat 0 kayıt döndü.</strong> Tabloya kayıt eklenebiliyor ancak " +
+                "okunamıyorsa sebep neredeyse kesinlikle RLS'tir: <code>" + TBL_PERSONNEL + "</code> tablosunda " +
+                "<strong>SELECT için policy tanımlı değil</strong> (RLS açık + policy yok = error null, data []). " +
+                "Dosyanın sonundaki <em>RLS POLICY</em> SQL bloğunu Supabase SQL Editor'de çalıştırın. " +
+                "Tablo gerçekten boşsa bu uyarıyı yok sayabilirsiniz.");
+            return true;
+        }
+
+        // Kolon adı doğrulaması — gelen ilk kaydın key'leri.
+        const keys = Object.keys(rows[0]);
+        console.log("[TEŞHİS] " + TBL_PERSONNEL + " ilk kayıt kolon adları:", keys);
+        console.log("[TEŞHİS] Koddaki COLS beklentisi:", COLS);
+
+        const expected = [COLS.name, COLS.job, COLS.cafeteria];
+        const missing = expected.filter(k => !keys.includes(k));
+        if (missing.length) {
+            showNotice(target, "warn",
+                "<strong>Kolon adı uyuşmazlığı.</strong> Tabloda bulunamayan kolonlar: <code>" +
+                missing.map(escapeHtml).join("</code>, <code>") + "</code>.<br>" +
+                "Tablodan gelen gerçek kolon adları: <code>" + keys.map(escapeHtml).join("</code>, <code>") + "</code>.<br>" +
+                "Düzeltmek için script başındaki <code>COLS</code> sabitini bu adlarla eşleştirin.");
+            return true;
+        }
+
+        clearNotice(target);
+        return true;
+    }
+
+    async function loadData() {
+        setStatus("admin", "Bağlanıyor...", "#ffc107");
+        try {
+            const { data, error } = await _supabase
+                .from(TBL_PERSONNEL).select("*")
+                .order(COLS.id, { ascending: false });
+
+            personnel = Array.isArray(data) ? data : [];
+            diagnoseFetch("admin", personnel, error);
+
+            updateDashboardStats();
+            renderAdminAll();
+        } catch (err) {
+            console.error("loadData:", err);
+            personnel = [];
+            setStatus("admin", "● Bağlantı hatası", "#dc3545");
+            showNotice("admin", "error", "<strong>Beklenmeyen hata:</strong> " + escapeHtml(err && err.message ? err.message : String(err)));
+            updateDashboardStats();
+            renderAdminAll();
+        }
+    }
+
+    async function loadStaffData() {
+        setStatus("staff", "Bağlanıyor...", "#ffc107");
+        try {
+            const { data, error } = await _supabase.from(TBL_PERSONNEL).select("*");
+            personnel = Array.isArray(data) ? data : [];
+            diagnoseFetch("staff", personnel, error);
+            renderStaffCafeterias();
+        } catch (err) {
+            console.error("loadStaffData:", err);
+            personnel = [];
+            setStatus("staff", "● Bağlantı hatası", "#dc3545");
+            showNotice("staff", "error", "<strong>Beklenmeyen hata:</strong> " + escapeHtml(err && err.message ? err.message : String(err)));
+            renderStaffCafeterias();
+        }
+    }
+
+    function updateDashboardStats() {
+        document.getElementById("totalCafeterias").textContent = CAFETERIA_COUNT;
+        document.getElementById("totalPersonnel").textContent = personnel.length;
+        const assigned = personnel.filter(isAssigned).length;
+        document.getElementById("assignedPersonnel").textContent = assigned;
+        document.getElementById("unassignedPersonnel").textContent = personnel.length - assigned;
+    }
+
+    /* ------------------------------------------------------------------
+       RENDER
+       ------------------------------------------------------------------ */
+    function renderPersonnel() {
+        const tbody = document.getElementById("personnelTable");
+        const search = (document.getElementById("personSearch").value || "").toLowerCase().trim();
+
+        const rows = personnel.filter(p => {
+            if (!search) return true;
+            const cafName = getCafeteriaName(p[COLS.cafeteria]).toLowerCase();
+            return personName(p).toLowerCase().includes(search) || cafName.includes(search);
+        });
+
+        if (!rows.length) {
+            tbody.innerHTML = '<tr><td colspan="4" class="empty">Kayıt bulunamadı.</td></tr>';
+            return;
+        }
+
+        // Tek seferde string birleştirip bir kez atama (performans).
+        const html = rows.map(p =>
+            "<tr>" +
+                "<td><strong>" + escapeHtml(personName(p) || "(isimsiz)") + "</strong></td>" +
+                "<td>" + escapeHtml(personJob(p) || "-") + "</td>" +
+                '<td><span class="badge">' + escapeHtml(getCafeteriaName(p[COLS.cafeteria])) + "</span></td>" +
+                '<td><button class="btn-danger btn-sm" data-action="delete" data-id="' + escapeHtml(p[COLS.id]) + '">Sil</button></td>' +
+            "</tr>"
+        ).join("");
+
+        tbody.innerHTML = html;
+    }
+
+    function cafeteriaCardHtml(c, count, clickable) {
+        const attrs = clickable
+            ? ' class="cafeteria clickable" tabindex="0" role="button" data-caf-id="' + c.id +
+              '" aria-label="' + escapeHtml(c.name) + ", " + count + ' personel. Detay için Enter."'
+            : ' class="cafeteria"';
+        return "<div" + attrs + "><h3>" + escapeHtml(c.name) + "</h3>" +
+               "<div>Personel: <strong>" + count + "</strong></div></div>";
+    }
+
+    function filterCafeterias(inputId) {
+        const q = (document.getElementById(inputId).value || "").toLowerCase().trim();
+        if (!q) return cafeterias;
+        return cafeterias.filter(c => c.name.toLowerCase().includes(q));
+    }
+
+    function personnelOfCafeteria(cafId) {
+        return personnel.filter(p => parseCafeteriaId(p[COLS.cafeteria]) === cafId);
+    }
+
+    function renderCafeterias() {
+        const grid = document.getElementById("cafeteriaGrid");
+        const list = filterCafeterias("cafSearch");
+        if (!list.length) {
+            grid.innerHTML = '<div class="empty">Kafeterya bulunamadı.</div>';
+            return;
+        }
+        grid.innerHTML = list.map(c => cafeteriaCardHtml(c, personnelOfCafeteria(c.id).length, true)).join("");
+    }
+
+    function renderStaffCafeterias() {
+        const grid = document.getElementById("staffCafeteriaGrid");
+        const list = filterCafeterias("staffCafSearch");
+        if (!list.length) {
+            grid.innerHTML = '<div class="empty">Kafeterya bulunamadı.</div>';
+            return;
+        }
+        grid.innerHTML = list.map(c => {
+            const workers = personnelOfCafeteria(c.id);
+            const wHtml = workers.length
+                ? workers.map(w => "<div>• " + escapeHtml(personName(w) || "(isimsiz)") +
+                    " (" + escapeHtml(personJob(w) || "-") + ")</div>").join("")
+                : "<small>Personel yok</small>";
+            return '<div class="cafeteria"><h3>' + escapeHtml(c.name) + "</h3>" + wHtml + "</div>";
+        }).join("");
+    }
+
+    function renderAdminAll() { renderPersonnel(); renderCafeterias(); }
+
+    /* ------------------------------------------------------------------
+       KAFETERYA DETAY MODALI
+       ------------------------------------------------------------------ */
+    function openCafeteriaModal(cafId) {
+        const c = cafeterias.find(x => x.id === Number(cafId));
+        if (!c) return;
+
+        const workers = personnelOfCafeteria(c.id);
+        document.getElementById("cafeteriaModalTitle").textContent = c.name;
+        document.getElementById("cafeteriaModalCount").textContent = workers.length;
+
+        const body = document.getElementById("cafeteriaModalBody");
+        body.innerHTML = workers.length
+            ? workers.map(w =>
+                '<div class="detail-row">' +
+                    '<div class="who"><strong>' + escapeHtml(personName(w) || "(isimsiz)") + "</strong>" +
+                    "<small>" + escapeHtml(personJob(w) || "-") + "</small></div>" +
+                    '<div class="actions">' +
+                        '<button class="btn-success btn-sm" data-action="transfer" data-id="' + escapeHtml(w[COLS.id]) + '">Yer Değiştir</button>' +
+                        '<button class="btn-danger btn-sm" data-action="delete" data-id="' + escapeHtml(w[COLS.id]) + '">Sil</button>' +
+                    "</div>" +
+                "</div>"
+              ).join("")
+            : '<div class="empty">Bu kafeteryada personel yok</div>';
+
+        openModal("cafeteriaModal");
+    }
+
+    // Kart tıklama + klavye erişimi (Enter / Space)
+    (function bindCafeteriaGrid() {
+        const grid = document.getElementById("cafeteriaGrid");
+        grid.addEventListener("click", function (e) {
+            const card = e.target.closest("[data-caf-id]");
+            if (card) openCafeteriaModal(card.getAttribute("data-caf-id"));
+        });
+        grid.addEventListener("keydown", function (e) {
+            if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+            const card = e.target.closest("[data-caf-id]");
+            if (!card) return;
+            e.preventDefault();
+            openCafeteriaModal(card.getAttribute("data-caf-id"));
+        });
+    })();
+
+    // Tablo ve detay modalındaki buton delegasyonu
+    document.getElementById("personnelTable").addEventListener("click", handleRowAction);
+    document.getElementById("cafeteriaModalBody").addEventListener("click", handleRowAction);
+
+    function handleRowAction(e) {
+        const btn = e.target.closest("button[data-action]");
+        if (!btn) return;
+        const id = btn.getAttribute("data-id");
+        if (btn.getAttribute("data-action") === "delete") {
+            deletePersonnel(id);
+        } else {
+            closeModal("cafeteriaModal");
+            openTransferModal(id);
+        }
+    }
+
+    /* ------------------------------------------------------------------
+       İŞLEMLER
+       ------------------------------------------------------------------ */
+    async function addPersonnel() {
+        const name = document.getElementById("personName").value.trim();
+        const job = document.getElementById("personJob").value.trim();
+        const cafeteria = document.getElementById("personCafeteria").value;
+
+        if (!name) {
+            alert("Lütfen personel adını giriniz.");
+            return;
+        }
+
+        try {
+            const record = {};
+            record[COLS.name] = name;
+            record[COLS.job] = job || "Personel";
+            record[COLS.cafeteria] = parseCafeteriaId(cafeteria);
+
+            const { error } = await _supabase.from(TBL_PERSONNEL).insert([record]);
+            if (error) {
+                console.error("addPersonnel:", error);
+                alert("Personel eklenirken hata oluştu: " + (error.message || "bilinmeyen hata"));
+                return;
+            }
+
+            document.getElementById("personName").value = "";
+            document.getElementById("personJob").value = "";
+            closeModal("personnelModal");
+            await loadData();
+        } catch (err) {
+            console.error("addPersonnel:", err);
+            alert("Personel eklenemedi: " + (err && err.message ? err.message : err));
+        }
+    }
+
+    async function deletePersonnel(id) {
+        if (!confirm("Bu personeli silmek istediğinize emin misiniz?")) return;
+        try {
+            const { error } = await _supabase.from(TBL_PERSONNEL).delete().eq(COLS.id, id);
+            if (error) {
+                console.error("deletePersonnel:", error);
+                alert("Silme başarısız: " + (error.message || "bilinmeyen hata") +
+                      "\n('" + TBL_PERSONNEL + "' tablosunda DELETE policy tanımlı mı?)");
+                return;
+            }
+            closeModal("cafeteriaModal");
+            await loadData();
+        } catch (err) {
+            console.error("deletePersonnel:", err);
+            alert("Silme sırasında hata: " + (err && err.message ? err.message : err));
+        }
+    }
+
+    async function transferPersonnel() {
+        const personnelId = document.getElementById("transferPersonnelSelect").value;
+        const newCafeteria = document.getElementById("transferCafeteria").value; // "" => Atanmamış
+
+        if (!personnelId) {
+            alert("Lütfen personel seçiniz.");
+            return;
+        }
+
+        try {
+            const patch = {};
+            patch[COLS.cafeteria] = parseCafeteriaId(newCafeteria); // "" ise null yazılır
+            const { error } = await _supabase.from(TBL_PERSONNEL).update(patch).eq(COLS.id, personnelId);
+
+            if (error) {
+                console.error("transferPersonnel:", error);
+                alert("Yer değiştirme hatası: " + (error.message || "bilinmeyen hata") +
+                      "\n('" + TBL_PERSONNEL + "' tablosunda UPDATE policy tanımlı mı?)");
+                return;
+            }
+
+            closeModal("transferModal");
+            await loadData();
+            alert(patch[COLS.cafeteria] === null
+                ? "Personelin görev yeri kaldırıldı (Atanmamış)."
+                : "Personel başarıyla yeni kafeteryaya aktarıldı!");
+        } catch (err) {
+            console.error("transferPersonnel:", err);
+            alert("Yer değiştirme sırasında hata: " + (err && err.message ? err.message : err));
+        }
+    }
+
+    async function addNewUser() {
+        const username = document.getElementById("newUsername").value.trim();
+        const password = document.getElementById("newPassword").value.trim();
+        const role = document.getElementById("newRole").value;
+
+        if (!username || !password) {
+            alert("Kullanıcı adı ve şifre zorunludur.");
+            return;
+        }
+
+        try {
+            // GÜVENLİK: şifre düz metin kaydediliyor — dosya başındaki uyarıya bakınız.
+            const { error } = await _supabase.from(TBL_USERS).insert([{ username, password, role }]);
+            if (error) {
+                console.error("addNewUser:", error);
+                alert("Kullanıcı eklenirken hata oluştu: " + (error.message || "bilinmeyen hata"));
+                return;
+            }
+
+            alert("Yeni kullanıcı başarıyla eklendi!");
+            document.getElementById("newUsername").value = "";
+            document.getElementById("newPassword").value = "";
+            closeModal("userModal");
+        } catch (err) {
+            console.error("addNewUser:", err);
+            alert("Kullanıcı eklenemedi: " + (err && err.message ? err.message : err));
+        }
+    }
+
+    function exportExcel() {
+        if (!personnel.length) {
+            alert("Aktarılacak personel verisi bulunamadı!");
+            return;
+        }
+
+        // CSV alanlarında çift tırnak "" ile kaçırılır.
+        const csvCell = v => '"' + String(v === null || v === undefined ? "" : v).replace(/"/g, '""') + '"';
+
+        const lines = ["Personel Adi,Gorevi,Kafeterya"];
+        personnel.forEach(p => {
+            lines.push([
+                csvCell(personName(p)),
+                csvCell(personJob(p)),
+                csvCell(getCafeteriaName(p[COLS.cafeteria]))
+            ].join(","));
+        });
+
+        const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "kafeterya_personel_listesi.csv";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    /* ------------------------------------------------------------------
+       MODAL AÇICILAR
+       ------------------------------------------------------------------ */
+    function openPersonnelModal() {
+        fillCafeteriaSelect(document.getElementById("personCafeteria"), true);
+        openModal("personnelModal");
+    }
+
+    function openTransferModal(preselectId) {
+        if (!fillPersonnelSelect(document.getElementById("transferPersonnelSelect"), preselectId)) {
+            alert("Listede personel yok. Önce personel ekleyin veya verilerin yüklendiğinden emin olun.");
+            return; // boş select ile modal açma
+        }
+        fillCafeteriaSelect(document.getElementById("transferCafeteria"), true);
+
+        // Seçili personelin mevcut kafeteryasını ön seçim yap
+        const sel = document.getElementById("transferPersonnelSelect");
+        const current = personnel.find(p => String(p[COLS.id]) === String(sel.value));
+        const cafId = current ? parseCafeteriaId(current[COLS.cafeteria]) : null;
+        document.getElementById("transferCafeteria").value = cafId === null ? "" : String(cafId);
+
+        openModal("transferModal");
+    }
+
+    function openUserModal() {
+        openModal("userModal");
+    }
+
+    function fillPersonnelSelect(select, preselectId) {
+        if (!personnel.length) {
+            select.innerHTML = "";
+            return false;
+        }
+        select.innerHTML = personnel.map(p =>
+            '<option value="' + escapeHtml(p[COLS.id]) + '">' +
+            escapeHtml((personName(p) || "(isimsiz)") + " (" + getCafeteriaName(p[COLS.cafeteria]) + ")") +
+            "</option>"
+        ).join("");
+        if (preselectId !== undefined && preselectId !== null) select.value = String(preselectId);
+        return true;
+    }
+
+    function fillCafeteriaSelect(select, includeEmpty) {
+        const parts = [];
+        if (includeEmpty) parts.push('<option value="">Atanmamış</option>');
+        cafeterias.forEach(c => parts.push('<option value="' + c.id + '">' + escapeHtml(c.name) + "</option>"));
+        select.innerHTML = parts.join("");
+    }
+</script>
+
+<!--
+================================================================================
+  SUPABASE ŞEMA + RLS POLICY SQL'LERİ
+  Supabase panel > SQL Editor içinde çalıştırın.
+================================================================================
+
+-- ----------------------------------------------------------------------------
+-- 1) TABLO ŞEMASI
+-- ----------------------------------------------------------------------------
+
+create table if not exists public.personnel (
+    id                      bigint generated by default as identity primary key,
+    "Personel Adı Soyadı"   text not null,
+    "Görevi"                text,
+    "Kafeterya"             integer,               -- 1..70, boşta personel için NULL
+    created_at              timestamptz default now()
+);
+
+create index if not exists personnel_kafeterya_idx on public.personnel ("Kafeterya");
+
+-- NOT: Kolon adları Türkçe/boşluklu olduğu için SQL'de çift tırnak zorunludur.
+-- Şemayı değiştirmek isterseniz index.html içindeki COLS sabitini de güncelleyin.
+
+create table if not exists public.users (
+    id          bigint generated by default as identity primary key,
+    username    text not null unique,
+    password    text not null,      -- GÜVENLİK: düz metin; Supabase Auth'a geçilmelidir
+    role        text not null default 'staff' check (role in ('admin','staff')),
+    created_at  timestamptz default now()
+);
+
+-- ----------------------------------------------------------------------------
+-- 2) RLS — "insert çalışıyor ama select boş dönüyor" sorununun ÇÖZÜMÜ
+--    RLS açık + SELECT policy yok  =>  error NULL, data []  (sessiz başarısızlık)
+-- ----------------------------------------------------------------------------
+
+alter table public.personnel enable row level security;
+
+-- Mevcut policy'leri temizle (tekrar çalıştırılabilir olsun diye)
+drop policy if exists "personnel_select_anon" on public.personnel;
+drop policy if exists "personnel_insert_anon" on public.personnel;
+drop policy if exists "personnel_update_anon" on public.personnel;
+drop policy if exists "personnel_delete_anon" on public.personnel;
+
+-- OKUMA (eksik olan policy buydu)
+create policy "personnel_select_anon"
+    on public.personnel for select
+    to anon, authenticated
+    using (true);
+
+-- YAZMA — uygulama şu an anon key ile yazıyor.
+-- Supabase Auth'a geçtikten sonra "to anon" kısmını kaldırıp
+-- "to authenticated" bırakın; ideal olanı auth.uid() bazlı kısıtlamadır.
+create policy "personnel_insert_anon"
+    on public.personnel for insert
+    to anon, authenticated
+    with check (true);
+
+create policy "personnel_update_anon"
+    on public.personnel for update
+    to anon, authenticated
+    using (true) with check (true);
+
+create policy "personnel_delete_anon"
+    on public.personnel for delete
+    to anon, authenticated
+    using (true);
+
+-- ----------------------------------------------------------------------------
+-- 3) users TABLOSU RLS
+--    Uygulama giriş için bu tabloyu anon key ile okuyor. Bu, düz metin
+--    şifrelerin herkese açık olması demektir. Supabase Auth'a geçilene kadar
+--    en azından RLS açık tutulmalıdır.
+-- ----------------------------------------------------------------------------
+
+alter table public.users enable row level security;
+
+drop policy if exists "users_select_anon" on public.users;
+drop policy if exists "users_insert_anon" on public.users;
+
+-- Mevcut giriş akışının çalışması için gereklidir. GÜVENLİ DEĞİLDİR.
+create policy "users_select_anon"
+    on public.users for select
+    to anon, authenticated
+    using (true);
+
+create policy "users_insert_anon"
+    on public.users for insert
+    to anon, authenticated
+    with check (true);
+
+-- ----------------------------------------------------------------------------
+-- 4) SUPABASE AUTH'A GEÇİŞ (önerilen hedef yapı)
+-- ----------------------------------------------------------------------------
+
+-- create table if not exists public.profiles (
+--     id    uuid primary key references auth.users(id) on delete cascade,
+--     role  text not null default 'staff' check (role in ('admin','staff'))
+-- );
+--
+-- alter table public.profiles enable row level security;
+--
+-- create policy "profiles_select_own"
+--     on public.profiles for select
+--     to authenticated
+--     using (id = auth.uid());
+--
+-- -- personnel tablosunda yazma yetkisini sadece admin'e verin:
+-- create policy "personnel_write_admin"
+--     on public.personnel for all
+--     to authenticated
+--     using (exists (select 1 from public.profiles p
+--                    where p.id = auth.uid() and p.role = 'admin'))
+--     with check (exists (select 1 from public.profiles p
+--                         where p.id = auth.uid() and p.role = 'admin'));
+--
+-- -- Ardından public.users tablosunu silin:
+-- -- drop table public.users;
+
+-- ----------------------------------------------------------------------------
+-- 5) TEŞHİS SORGULARI
+-- ----------------------------------------------------------------------------
+
+-- Kayıt var mı? (RLS'i baypas eden SQL Editor üzerinden)
+-- select count(*) from public.personnel;
+
+-- Gerçek kolon adları nedir? (COLS sabiti ile karşılaştırın)
+-- select column_name, data_type from information_schema.columns
+--  where table_schema = 'public' and table_name = 'personnel';
+
+-- Tanımlı policy'ler
+-- select policyname, cmd, roles from pg_policies
+--  where schemaname = 'public' and tablename in ('personnel','users');
+================================================================================
+-->
+
+</body>
+</html>
