@@ -5,45 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kafeterya Personel Yönetim Sistemi</title>
 
-<!--
-================================================================================
-  GÜVENLİK UYARISI — MUTLAKA OKUYUN
-================================================================================
-  1) SABİT GİRİŞ (admin / 1234)
-     checkLogin() içinde sabit kodlanmış bir yönetici girişi vardır. Bu bypass
-     istek üzerine korunmuştur ancak PRODUCTION ORTAMINDA KULLANILMAMALIDIR.
-     Tarayıcı kaynak kodunu gören herkes bu bilgiyi okuyabilir.
-
-  2) DÜZ METİN ŞİFRE
-     'users' tablosunda şifreler düz metin tutulmakta ve .eq('password', pass)
-     ile karşılaştırılmaktadır. Bu, anon key ile 'users' tablosunu okuyabilen
-     herkesin tüm şifreleri görebilmesi demektir.
-
-  3) SUPABASE AUTH'A GEÇİŞ İÇİN YAPILMASI GEREKENLER
-     a. Supabase panelinde Authentication > Providers > Email aktif edilir.
-     b. Kullanıcılar 'users' tablosu yerine auth.users üzerinde oluşturulur:
-           await _supabase.auth.signUp({ email, password })
-     c. Giriş:
-           const { data, error } = await _supabase.auth.signInWithPassword({
-               email, password
-           });
-     d. Rol bilgisi için auth.users.id'ye FK veren bir 'profiles' tablosu
-        kullanılır (bkz. dosya sonundaki SQL bloğu).
-     e. 'users' tablosu ve içindeki düz metin şifreler tamamen silinir.
-     f. Tüm RLS policy'leri auth.uid() / auth.role() üzerinden yazılır,
-        böylece anon kullanıcı yazma yetkisi alamaz.
-     g. Oturum kontrolü:
-           const { data: { session } } = await _supabase.auth.getSession();
-
-  4) ANON KEY
-     Aşağıdaki SUPABASE_ANON_KEY istemci tarafında açıkta durur; anon key
-     "public" bir anahtardır ve bu normaldir. ANCAK bu ancak ve ancak tüm
-     tablolarda RLS (Row Level Security) AÇIK ve policy'ler doğru yazılmışsa
-     güvenlidir. RLS kapalıysa anon key ile tüm veriler okunabilir/silinebilir.
-     Gerekli SQL komutları dosyanın en sonundadır.
-================================================================================
--->
-
 <!-- Supabase Kütüphanesi -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
@@ -163,25 +124,7 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
             <button class="btn-primary" onclick="openPersonnelModal()">➕ Personel Ekle</button>
             <button class="btn-success" onclick="openTransferModal()">🔄 Yer Değiştir</button>
             <button class="btn-warning" onclick="openUserModal()">👤 Yeni Kullanıcı Ekle</button>
-            <button class="btn-warning" onclick="exportExcel()">📥 Excel/CSV Aktar</button>
-        </div>
-
-        <div class="section">
-            <h2>👤 Personel Listesi</h2>
-            <input class="search" id="personSearch" placeholder="Personel adı veya kafeterya ara..." oninput="renderPersonnel()">
-            <div style="overflow-x:auto;">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Personel</th>
-                            <th>Görev</th>
-                            <th>Kafeterya</th>
-                            <th>İşlem</th>
-                        </tr>
-                    </thead>
-                    <tbody id="personnelTable"></tbody>
-                </table>
-            </div>
+            <button class="btn-warning" onclick="exportAllExcel()">📥 Tümünü Excel'e Aktar</button>
         </div>
 
         <div class="section">
@@ -272,26 +215,21 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         <h2 id="cafeteriaModalTitle">Kafeterya</h2>
         <p style="margin-top:-8px;">Personel sayısı: <strong id="cafeteriaModalCount">0</strong></p>
         <div id="cafeteriaModalBody"></div>
-        <div class="actions" style="margin-top:18px;">
+        <div class="actions" style="margin-top:18px; justify-content: space-between;">
+            <button class="btn-warning" id="exportCafeteriaExcelBtn">📥 Bu Kafeteryayı Excel'e Aktar</button>
             <button onclick="closeModal('cafeteriaModal')">Kapat</button>
         </div>
     </div>
 </div>
 
 <script>
-    /* ------------------------------------------------------------------
-       YAPILANDIRMA
-       ------------------------------------------------------------------ */
     const SUPABASE_URL = "https://hqfrptvrobvzxdauyorp.supabase.co";
-    // Anon key public'tir; güvenlik RLS ile sağlanır (dosya başındaki uyarı + sondaki SQL).
     const SUPABASE_ANON_KEY = "sb_publishable_ZfBZAmqAJlPEB-RoUmXlYQ_obYf1sK3";
     const _supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    // Tablo adları
     const TBL_PERSONNEL = "personnel";
     const TBL_USERS = "users";
 
-    // Kolon adları TEK yerde. Supabase tablo şeması farklıysa SADECE burayı değiştirin.
     const COLS = {
         id: "id",
         name: "Personel Adı Soyadı",
@@ -299,7 +237,6 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         cafeteria: "Kafeterya"
     };
 
-    // Kafeterya sayısı TEK yerde.
     const CAFETERIA_COUNT = 70;
 
     let personnel = [];
@@ -308,11 +245,6 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         cafeterias.push({ id: i, name: "Kafeterya " + i });
     }
 
-    /* ------------------------------------------------------------------
-       YARDIMCI FONKSİYONLAR
-       ------------------------------------------------------------------ */
-
-    // Tüm dinamik değerler innerHTML'e basılmadan önce buradan geçer (XSS koruması).
     function escapeHtml(value) {
         if (value === null || value === undefined) return "";
         return String(value)
@@ -323,8 +255,6 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
             .replace(/'/g, "&#39;");
     }
 
-    // "Kafeterya" alanı text de integer da olabilir. Atanmamış kabul edilenler:
-    // null, undefined, "", "   ", 0, "0", sayı olmayan değerler.
     function parseCafeteriaId(value) {
         if (value === null || value === undefined) return null;
         if (typeof value === "string" && value.trim() === "") return null;
@@ -378,9 +308,6 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         return parts.join(" — ");
     }
 
-    /* ------------------------------------------------------------------
-       MODAL YÖNETİMİ (dış tıklama + ESC tüm modallar için)
-       ------------------------------------------------------------------ */
     function openModal(id) {
         const el = document.getElementById(id);
         if (el) el.style.display = "flex";
@@ -399,7 +326,7 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
 
     document.querySelectorAll(".modal").forEach(m => {
         m.addEventListener("mousedown", function (e) {
-            if (e.target === m) m.style.display = "none"; // sadece arka plana tıklamada kapat
+            if (e.target === m) m.style.display = "none";
         });
     });
 
@@ -407,30 +334,24 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         if (e.key === "Escape") closeTopModal();
     });
 
-    /* ------------------------------------------------------------------
-       GİRİŞ / OTURUM
-       ------------------------------------------------------------------ */
     async function checkLogin() {
         const user = document.getElementById("loginUsername").value.trim();
         const pass = document.getElementById("loginPassword").value.trim();
         const errEl = document.getElementById("loginError");
         errEl.style.display = "none";
 
-        // GÜVENLİK: sabit kodlanmış bypass — dosya başındaki uyarıya bakınız.
         if (user === "admin" && pass === "1234") {
             openDashboard("admin");
             return;
         }
 
         try {
-            // GÜVENLİK: düz metin şifre karşılaştırması — dosya başındaki uyarıya bakınız.
             const { data, error } = await _supabase
                 .from(TBL_USERS).select("*")
                 .eq("username", user).eq("password", pass);
 
             if (error) {
-                console.error("Giriş sorgusu hatası:", error);
-                errEl.textContent = "Giriş yapılamadı (bağlantı/yetki hatası): " + (error.message || "bilinmeyen hata");
+                errEl.textContent = "Giriş yapılamadı: " + (error.message || "bilinmeyen hata");
                 errEl.style.display = "block";
                 return;
             }
@@ -442,7 +363,6 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
                 errEl.style.display = "block";
             }
         } catch (err) {
-            console.error(err);
             errEl.textContent = "Sunucuya ulaşılamadı: " + (err && err.message ? err.message : err);
             errEl.style.display = "block";
         }
@@ -476,50 +396,17 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         if (event.key === "Enter") checkLogin();
     });
 
-    /* ------------------------------------------------------------------
-       VERİ YÜKLEME + TEŞHİS
-       ------------------------------------------------------------------ */
-
-    // error null + data [] durumu "sessiz başarısızlık"tır. Genelde SELECT policy yokluğu
-    // (RLS açık, policy yok) veya gerçekten boş tablo demektir. İkisini ayırt edip uyarıyoruz.
     function diagnoseFetch(target, rows, error) {
         if (error) {
             setStatus(target, "● Bağlantı hatası", "#dc3545");
-            showNotice(target, "error",
-                "<strong>Veri çekilemedi.</strong> " + describeError(error) +
-                "<br>Muhtemel sebep: <code>" + TBL_PERSONNEL + "</code> tablosunda <strong>SELECT policy</strong> yok " +
-                "veya tablo adı hatalı. Dosyanın sonundaki SQL bloğunu çalıştırın.");
+            showNotice(target, "error", "<strong>Veri çekilemedi.</strong> " + describeError(error));
             return false;
         }
-
         setStatus(target, "● Bağlandı", "#28a745");
-
         if (!rows.length) {
-            showNotice(target, "warn",
-                "<strong>Sorgu başarılı fakat 0 kayıt döndü.</strong> Tabloya kayıt eklenebiliyor ancak " +
-                "okunamıyorsa sebep neredeyse kesinlikle RLS'tir: <code>" + TBL_PERSONNEL + "</code> tablosunda " +
-                "<strong>SELECT için policy tanımlı değil</strong> (RLS açık + policy yok = error null, data []). " +
-                "Dosyanın sonundaki <em>RLS POLICY</em> SQL bloğunu Supabase SQL Editor'de çalıştırın. " +
-                "Tablo gerçekten boşsa bu uyarıyı yok sayabilirsiniz.");
+            showNotice(target, "warn", "<strong>Sorgu başarılı fakat 0 kayıt döndü.</strong> Tabloda kayıt yoksa veya RLS policy eksikse bu uyarı görünür.");
             return true;
         }
-
-        // Kolon adı doğrulaması — gelen ilk kaydın key'leri.
-        const keys = Object.keys(rows[0]);
-        console.log("[TEŞHİS] " + TBL_PERSONNEL + " ilk kayıt kolon adları:", keys);
-        console.log("[TEŞHİS] Koddaki COLS beklentisi:", COLS);
-
-        const expected = [COLS.name, COLS.job, COLS.cafeteria];
-        const missing = expected.filter(k => !keys.includes(k));
-        if (missing.length) {
-            showNotice(target, "warn",
-                "<strong>Kolon adı uyuşmazlığı.</strong> Tabloda bulunamayan kolonlar: <code>" +
-                missing.map(escapeHtml).join("</code>, <code>") + "</code>.<br>" +
-                "Tablodan gelen gerçek kolon adları: <code>" + keys.map(escapeHtml).join("</code>, <code>") + "</code>.<br>" +
-                "Düzeltmek için script başındaki <code>COLS</code> sabitini bu adlarla eşleştirin.");
-            return true;
-        }
-
         clearNotice(target);
         return true;
     }
@@ -533,14 +420,11 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
 
             personnel = Array.isArray(data) ? data : [];
             diagnoseFetch("admin", personnel, error);
-
             updateDashboardStats();
             renderAdminAll();
         } catch (err) {
-            console.error("loadData:", err);
             personnel = [];
             setStatus("admin", "● Bağlantı hatası", "#dc3545");
-            showNotice("admin", "error", "<strong>Beklenmeyen hata:</strong> " + escapeHtml(err && err.message ? err.message : String(err)));
             updateDashboardStats();
             renderAdminAll();
         }
@@ -554,10 +438,8 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
             diagnoseFetch("staff", personnel, error);
             renderStaffCafeterias();
         } catch (err) {
-            console.error("loadStaffData:", err);
             personnel = [];
             setStatus("staff", "● Bağlantı hatası", "#dc3545");
-            showNotice("staff", "error", "<strong>Beklenmeyen hata:</strong> " + escapeHtml(err && err.message ? err.message : String(err)));
             renderStaffCafeterias();
         }
     }
@@ -570,41 +452,14 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         document.getElementById("unassignedPersonnel").textContent = personnel.length - assigned;
     }
 
-    /* ------------------------------------------------------------------
-       RENDER
-       ------------------------------------------------------------------ */
     function renderPersonnel() {
-        const tbody = document.getElementById("personnelTable");
-        const search = (document.getElementById("personSearch").value || "").toLowerCase().trim();
-
-        const rows = personnel.filter(p => {
-            if (!search) return true;
-            const cafName = getCafeteriaName(p[COLS.cafeteria]).toLowerCase();
-            return personName(p).toLowerCase().includes(search) || cafName.includes(search);
-        });
-
-        if (!rows.length) {
-            tbody.innerHTML = '<tr><td colspan="4" class="empty">Kayıt bulunamadı.</td></tr>';
-            return;
-        }
-
-        // Tek seferde string birleştirip bir kez atama (performans).
-        const html = rows.map(p =>
-            "<tr>" +
-                "<td><strong>" + escapeHtml(personName(p) || "(isimsiz)") + "</strong></td>" +
-                "<td>" + escapeHtml(personJob(p) || "-") + "</td>" +
-                '<td><span class="badge">' + escapeHtml(getCafeteriaName(p[COLS.cafeteria])) + "</span></td>" +
-                '<td><button class="btn-danger btn-sm" data-action="delete" data-id="' + escapeHtml(p[COLS.id]) + '">Sil</button></td>' +
-            "</tr>"
-        ).join("");
-
-        tbody.innerHTML = html;
+        // Ana ekrandaki tablo kaldırıldı; detaylar kafeterya modalında listeleniyor.
     }
 
     function cafeteriaCardHtml(c, count, clickable) {
         const attrs = clickable
             ? ' class="cafeteria clickable" tabindex="0" role="button" data-caf-id="' + c.id +
-              '" aria-label="' + escapeHtml(c.name) + ", " + count + ' personel. Detay için Enter."'
+              '" aria-label="' + escapeHtml(c.name) + ", " + count + ' personel."'
             : ' class="cafeteria"';
         return "<div" + attrs + "><h3>" + escapeHtml(c.name) + "</h3>" +
                "<div>Personel: <strong>" + count + "</strong></div></div>";
@@ -647,14 +502,14 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         }).join("");
     }
 
-    function renderAdminAll() { renderPersonnel(); renderCafeterias(); }
+    function renderAdminAll() { renderCafeterias(); }
 
-    /* ------------------------------------------------------------------
-       KAFETERYA DETAY MODALI
-       ------------------------------------------------------------------ */
+    let currentActiveCafeteriaId = null;
+
     function openCafeteriaModal(cafId) {
         const c = cafeterias.find(x => x.id === Number(cafId));
         if (!c) return;
+        currentActiveCafeteriaId = c.id;
 
         const workers = personnelOfCafeteria(c.id);
         document.getElementById("cafeteriaModalTitle").textContent = c.name;
@@ -662,22 +517,27 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
 
         const body = document.getElementById("cafeteriaModalBody");
         body.innerHTML = workers.length
-            ? workers.map(w =>
-                '<div class="detail-row">' +
-                    '<div class="who"><strong>' + escapeHtml(personName(w) || "(isimsiz)") + "</strong>" +
-                    "<small>" + escapeHtml(personJob(w) || "-") + "</small></div>" +
-                    '<div class="actions">' +
+            ? '<div style="max-height: 350px; overflow-y: auto;"><table><thead><tr><th>Personel</th><th>Görev</th><th>İşlem</th></tr></thead><tbody>' +
+              workers.map(w =>
+                "<tr>" +
+                    "<td><strong>" + escapeHtml(personName(w) || "(isimsiz)") + "</strong></td>" +
+                    "<td>" + escapeHtml(personJob(w) || "-") + "</td>" +
+                    '<td><div class="actions">' +
                         '<button class="btn-success btn-sm" data-action="transfer" data-id="' + escapeHtml(w[COLS.id]) + '">Yer Değiştir</button>' +
                         '<button class="btn-danger btn-sm" data-action="delete" data-id="' + escapeHtml(w[COLS.id]) + '">Sil</button>' +
-                    "</div>" +
-                "</div>"
-              ).join("")
+                    "</div></td>" +
+                "</tr>"
+              ).join("") +
+              "</tbody></table></div>"
             : '<div class="empty">Bu kafeteryada personel yok</div>';
+
+        document.getElementById("exportCafeteriaExcelBtn").onclick = function() {
+            exportSingleCafeteriaExcel(c.id, c.name);
+        };
 
         openModal("cafeteriaModal");
     }
 
-    // Kart tıklama + klavye erişimi (Enter / Space)
     (function bindCafeteriaGrid() {
         const grid = document.getElementById("cafeteriaGrid");
         grid.addEventListener("click", function (e) {
@@ -685,7 +545,7 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
             if (card) openCafeteriaModal(card.getAttribute("data-caf-id"));
         });
         grid.addEventListener("keydown", function (e) {
-            if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+            if (e.key !== "Enter" && e.key !== " ") return;
             const card = e.target.closest("[data-caf-id]");
             if (!card) return;
             e.preventDefault();
@@ -693,8 +553,6 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         });
     })();
 
-    // Tablo ve detay modalındaki buton delegasyonu
-    document.getElementById("personnelTable").addEventListener("click", handleRowAction);
     document.getElementById("cafeteriaModalBody").addEventListener("click", handleRowAction);
 
     function handleRowAction(e) {
@@ -709,90 +567,101 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         }
     }
 
-    /* ------------------------------------------------------------------
-       İŞLEMLER
-       ------------------------------------------------------------------ */
     async function addPersonnel() {
         const name = document.getElementById("personName").value.trim();
         const job = document.getElementById("personJob").value.trim();
         const cafeteria = document.getElementById("personCafeteria").value;
 
         if (!name) {
-            alert("Lütfen personel adını giriniz.");
+            alert("Lütfen personel adını girin!");
             return;
         }
 
-        try {
-            const record = {};
-            record[COLS.name] = name;
-            record[COLS.job] = job || "Personel";
-            record[COLS.cafeteria] = parseCafeteriaId(cafeteria);
+        const payload = {
+            [COLS.name]: name,
+            [COLS.job]: job,
+            [COLS.cafeteria]: cafeteria ? Number(cafeteria) : null
+        };
 
-            const { error } = await _supabase.from(TBL_PERSONNEL).insert([record]);
+        try {
+            const { error } = await _supabase.from(TBL_PERSONNEL).insert([payload]);
             if (error) {
-                console.error("addPersonnel:", error);
-                alert("Personel eklenirken hata oluştu: " + (error.message || "bilinmeyen hata"));
+                alert("Personel eklenirken hata oluştu: " + describeError(error));
                 return;
             }
-
+            closeModal("personnelModal");
             document.getElementById("personName").value = "";
             document.getElementById("personJob").value = "";
-            closeModal("personnelModal");
-            await loadData();
+            loadData();
         } catch (err) {
-            console.error("addPersonnel:", err);
-            alert("Personel eklenemedi: " + (err && err.message ? err.message : err));
+            alert("Beklenmeyen hata: " + (err && err.message ? err.message : err));
         }
+    }
+
+    function openPersonnelModal() {
+        const select = document.getElementById("personCafeteria");
+        select.innerHTML = '<option value="">Atanmamış</option>' +
+            cafeterias.map(c => '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>').join("");
+        openModal("personnelModal");
     }
 
     async function deletePersonnel(id) {
-        if (!confirm("Bu personeli silmek istediğinize emin misiniz?")) return;
+        if (!confirm("Bu personeli silmek istediğinizden emin misiniz?")) return;
         try {
             const { error } = await _supabase.from(TBL_PERSONNEL).delete().eq(COLS.id, id);
             if (error) {
-                console.error("deletePersonnel:", error);
-                alert("Silme başarısız: " + (error.message || "bilinmeyen hata") +
-                      "\n('" + TBL_PERSONNEL + "' tablosunda DELETE policy tanımlı mı?)");
+                alert("Silme hatası: " + describeError(error));
                 return;
             }
             closeModal("cafeteriaModal");
-            await loadData();
+            loadData();
         } catch (err) {
-            console.error("deletePersonnel:", err);
-            alert("Silme sırasında hata: " + (err && err.message ? err.message : err));
+            alert("Beklenmeyen hata: " + (err && err.message ? err.message : err));
         }
     }
 
-    async function transferPersonnel() {
-        const personnelId = document.getElementById("transferPersonnelSelect").value;
-        const newCafeteria = document.getElementById("transferCafeteria").value; // "" => Atanmamış
+    function openTransferModal(preselectedId) {
+        const pSelect = document.getElementById("transferPersonnelSelect");
+        pSelect.innerHTML = personnel.map(p => 
+            '<option value="' + escapeHtml(p[COLS.id]) + '"' + (String(p[COLS.id]) === String(preselectedId) ? ' selected' : '') + '>' +
+            escapeHtml(personName(p)) + ' (' + escapeHtml(getCafeteriaName(p[COLS.cafeteria])) + ')</option>'
+        ).join("");
 
-        if (!personnelId) {
-            alert("Lütfen personel seçiniz.");
+        const cSelect = document.getElementById("transferCafeteria");
+        cSelect.innerHTML = cafeterias.map(c => '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>').join("");
+
+        openModal("transferModal");
+    }
+
+    async function transferPersonnel() {
+        const pId = document.getElementById("transferPersonnelSelect").value;
+        const newCafId = document.getElementById("transferCafeteria").value;
+
+        if (!pId || !newCafId) {
+            alert("Lütfen personel ve kafeterya seçin!");
             return;
         }
 
         try {
-            const patch = {};
-            patch[COLS.cafeteria] = parseCafeteriaId(newCafeteria); // "" ise null yazılır
-            const { error } = await _supabase.from(TBL_PERSONNEL).update(patch).eq(COLS.id, personnelId);
+            const { error } = await _supabase.from(TBL_PERSONNEL)
+                .update({ [COLS.cafeteria]: Number(newCafId) })
+                .eq(COLS.id, pId);
 
             if (error) {
-                console.error("transferPersonnel:", error);
-                alert("Yer değiştirme hatası: " + (error.message || "bilinmeyen hata") +
-                      "\n('" + TBL_PERSONNEL + "' tablosunda UPDATE policy tanımlı mı?)");
+                alert("Yer değiştirme hatası: " + describeError(error));
                 return;
             }
-
             closeModal("transferModal");
-            await loadData();
-            alert(patch[COLS.cafeteria] === null
-                ? "Personelin görev yeri kaldırıldı (Atanmamış)."
-                : "Personel başarıyla yeni kafeteryaya aktarıldı!");
+            loadData();
         } catch (err) {
-            console.error("transferPersonnel:", err);
-            alert("Yer değiştirme sırasında hata: " + (err && err.message ? err.message : err));
+            alert("Beklenmeyen hata: " + (err && err.message ? err.message : err));
         }
+    }
+
+    function openUserModal() {
+        document.getElementById("newUsername").value = "";
+        document.getElementById("newPassword").value = "";
+        openModal("userModal");
     }
 
     async function addNewUser() {
@@ -801,243 +670,61 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         const role = document.getElementById("newRole").value;
 
         if (!username || !password) {
-            alert("Kullanıcı adı ve şifre zorunludur.");
+            alert("Lütfen kullanıcı adı ve şifre girin!");
             return;
         }
 
         try {
-            // GÜVENLİK: şifre düz metin kaydediliyor — dosya başındaki uyarıya bakınız.
             const { error } = await _supabase.from(TBL_USERS).insert([{ username, password, role }]);
             if (error) {
-                console.error("addNewUser:", error);
-                alert("Kullanıcı eklenirken hata oluştu: " + (error.message || "bilinmeyen hata"));
+                alert("Kullanıcı eklenirken hata oluştu: " + describeError(error));
                 return;
             }
-
-            alert("Yeni kullanıcı başarıyla eklendi!");
-            document.getElementById("newUsername").value = "";
-            document.getElementById("newPassword").value = "";
             closeModal("userModal");
+            alert("Kullanıcı başarıyla eklendi.");
         } catch (err) {
-            console.error("addNewUser:", err);
-            alert("Kullanıcı eklenemedi: " + (err && err.message ? err.message : err));
+            alert("Beklenmeyen hata: " + (err && err.message ? err.message : err));
         }
     }
 
-    function exportExcel() {
-        if (!personnel.length) {
-            alert("Aktarılacak personel verisi bulunamadı!");
+    function exportSingleCafeteriaExcel(cafId, cafName) {
+        const workers = personnelOfCafeteria(cafId);
+        if (!workers.length) {
+            alert("Bu kafeteryada dışa aktarılacak personel bulunmuyor.");
             return;
         }
 
-        // CSV alanlarında çift tırnak "" ile kaçırılır.
-        const csvCell = v => '"' + String(v === null || v === undefined ? "" : v).replace(/"/g, '""') + '"';
-
-        const lines = ["Personel Adi,Gorevi,Kafeterya"];
-        personnel.forEach(p => {
-            lines.push([
-                csvCell(personName(p)),
-                csvCell(personJob(p)),
-                csvCell(getCafeteriaName(p[COLS.cafeteria]))
-            ].join(","));
+        let csv = "Personel Adi,Gorevi,Kafeterya\n";
+        workers.forEach(p => {
+            csv += `"${personName(p)}","${personJob(p)}","${cafName}"\n`;
         });
 
-        const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+        const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = "kafeterya_personel_listesi.csv";
+        a.download = `${cafName.toLowerCase().replace(/\s+/g, '_')}_personel_listesi.csv`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        URL.revokeObjectURL(url);
     }
 
-    /* ------------------------------------------------------------------
-       MODAL AÇICILAR
-       ------------------------------------------------------------------ */
-    function openPersonnelModal() {
-        fillCafeteriaSelect(document.getElementById("personCafeteria"), true);
-        openModal("personnelModal");
-    }
+    function exportAllExcel() {
+        let csv = "Personel Adi,Gorevi,Kafeterya\n";
+        personnel.forEach(p => {
+            csv += `"${personName(p)}","${personJob(p)}","${getCafeteriaName(p[COLS.cafeteria])}"\n`;
+        });
 
-    function openTransferModal(preselectId) {
-        if (!fillPersonnelSelect(document.getElementById("transferPersonnelSelect"), preselectId)) {
-            alert("Listede personel yok. Önce personel ekleyin veya verilerin yüklendiğinden emin olun.");
-            return; // boş select ile modal açma
-        }
-        fillCafeteriaSelect(document.getElementById("transferCafeteria"), true);
-
-        // Seçili personelin mevcut kafeteryasını ön seçim yap
-        const sel = document.getElementById("transferPersonnelSelect");
-        const current = personnel.find(p => String(p[COLS.id]) === String(sel.value));
-        const cafId = current ? parseCafeteriaId(current[COLS.cafeteria]) : null;
-        document.getElementById("transferCafeteria").value = cafId === null ? "" : String(cafId);
-
-        openModal("transferModal");
-    }
-
-    function openUserModal() {
-        openModal("userModal");
-    }
-
-    function fillPersonnelSelect(select, preselectId) {
-        if (!personnel.length) {
-            select.innerHTML = "";
-            return false;
-        }
-        select.innerHTML = personnel.map(p =>
-            '<option value="' + escapeHtml(p[COLS.id]) + '">' +
-            escapeHtml((personName(p) || "(isimsiz)") + " (" + getCafeteriaName(p[COLS.cafeteria]) + ")") +
-            "</option>"
-        ).join("");
-        if (preselectId !== undefined && preselectId !== null) select.value = String(preselectId);
-        return true;
-    }
-
-    function fillCafeteriaSelect(select, includeEmpty) {
-        const parts = [];
-        if (includeEmpty) parts.push('<option value="">Atanmamış</option>');
-        cafeterias.forEach(c => parts.push('<option value="' + c.id + '">' + escapeHtml(c.name) + "</option>"));
-        select.innerHTML = parts.join("");
+        const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "tum_kafeterya_personel_listesi.csv";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
     }
 </script>
-
-<!--
-================================================================================
-  SUPABASE ŞEMA + RLS POLICY SQL'LERİ
-  Supabase panel > SQL Editor içinde çalıştırın.
-================================================================================
-
--- ----------------------------------------------------------------------------
--- 1) TABLO ŞEMASI
--- ----------------------------------------------------------------------------
-
-create table if not exists public.personnel (
-    id                      bigint generated by default as identity primary key,
-    "Personel Adı Soyadı"   text not null,
-    "Görevi"                text,
-    "Kafeterya"             integer,               -- 1..70, boşta personel için NULL
-    created_at              timestamptz default now()
-);
-
-create index if not exists personnel_kafeterya_idx on public.personnel ("Kafeterya");
-
--- NOT: Kolon adları Türkçe/boşluklu olduğu için SQL'de çift tırnak zorunludur.
--- Şemayı değiştirmek isterseniz index.html içindeki COLS sabitini de güncelleyin.
-
-create table if not exists public.users (
-    id          bigint generated by default as identity primary key,
-    username    text not null unique,
-    password    text not null,      -- GÜVENLİK: düz metin; Supabase Auth'a geçilmelidir
-    role        text not null default 'staff' check (role in ('admin','staff')),
-    created_at  timestamptz default now()
-);
-
--- ----------------------------------------------------------------------------
--- 2) RLS — "insert çalışıyor ama select boş dönüyor" sorununun ÇÖZÜMÜ
---    RLS açık + SELECT policy yok  =>  error NULL, data []  (sessiz başarısızlık)
--- ----------------------------------------------------------------------------
-
-alter table public.personnel enable row level security;
-
--- Mevcut policy'leri temizle (tekrar çalıştırılabilir olsun diye)
-drop policy if exists "personnel_select_anon" on public.personnel;
-drop policy if exists "personnel_insert_anon" on public.personnel;
-drop policy if exists "personnel_update_anon" on public.personnel;
-drop policy if exists "personnel_delete_anon" on public.personnel;
-
--- OKUMA (eksik olan policy buydu)
-create policy "personnel_select_anon"
-    on public.personnel for select
-    to anon, authenticated
-    using (true);
-
--- YAZMA — uygulama şu an anon key ile yazıyor.
--- Supabase Auth'a geçtikten sonra "to anon" kısmını kaldırıp
--- "to authenticated" bırakın; ideal olanı auth.uid() bazlı kısıtlamadır.
-create policy "personnel_insert_anon"
-    on public.personnel for insert
-    to anon, authenticated
-    with check (true);
-
-create policy "personnel_update_anon"
-    on public.personnel for update
-    to anon, authenticated
-    using (true) with check (true);
-
-create policy "personnel_delete_anon"
-    on public.personnel for delete
-    to anon, authenticated
-    using (true);
-
--- ----------------------------------------------------------------------------
--- 3) users TABLOSU RLS
---    Uygulama giriş için bu tabloyu anon key ile okuyor. Bu, düz metin
---    şifrelerin herkese açık olması demektir. Supabase Auth'a geçilene kadar
---    en azından RLS açık tutulmalıdır.
--- ----------------------------------------------------------------------------
-
-alter table public.users enable row level security;
-
-drop policy if exists "users_select_anon" on public.users;
-drop policy if exists "users_insert_anon" on public.users;
-
--- Mevcut giriş akışının çalışması için gereklidir. GÜVENLİ DEĞİLDİR.
-create policy "users_select_anon"
-    on public.users for select
-    to anon, authenticated
-    using (true);
-
-create policy "users_insert_anon"
-    on public.users for insert
-    to anon, authenticated
-    with check (true);
-
--- ----------------------------------------------------------------------------
--- 4) SUPABASE AUTH'A GEÇİŞ (önerilen hedef yapı)
--- ----------------------------------------------------------------------------
-
--- create table if not exists public.profiles (
---     id    uuid primary key references auth.users(id) on delete cascade,
---     role  text not null default 'staff' check (role in ('admin','staff'))
--- );
---
--- alter table public.profiles enable row level security;
---
--- create policy "profiles_select_own"
---     on public.profiles for select
---     to authenticated
---     using (id = auth.uid());
---
--- -- personnel tablosunda yazma yetkisini sadece admin'e verin:
--- create policy "personnel_write_admin"
---     on public.personnel for all
---     to authenticated
---     using (exists (select 1 from public.profiles p
---                    where p.id = auth.uid() and p.role = 'admin'))
---     with check (exists (select 1 from public.profiles p
---                         where p.id = auth.uid() and p.role = 'admin'));
---
--- -- Ardından public.users tablosunu silin:
--- -- drop table public.users;
-
--- ----------------------------------------------------------------------------
--- 5) TEŞHİS SORGULARI
--- ----------------------------------------------------------------------------
-
--- Kayıt var mı? (RLS'i baypas eden SQL Editor üzerinden)
--- select count(*) from public.personnel;
-
--- Gerçek kolon adları nedir? (COLS sabiti ile karşılaştırın)
--- select column_name, data_type from information_schema.columns
---  where table_schema = 'public' and table_name = 'personnel';
-
--- Tanımlı policy'ler
--- select policyname, cmd, roles from pg_policies
---  where schemaname = 'public' and tablename in ('personnel','users');
-================================================================================
--->
 
 </body>
 </html>
