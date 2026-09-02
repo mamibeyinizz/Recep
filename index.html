@@ -163,6 +163,8 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         <h2>Yeni Personel</h2>
         <label>Personel Adı Soyadı</label>
         <input id="personName" placeholder="Örn: Ahmet Yılmaz">
+        <label>Unvan</label>
+        <input id="personTitle" placeholder="Örn: Şef Garson">
         <label>Görevi</label>
         <input id="personJob" placeholder="Örn: Kafeterya Personeli">
         <label>Kafeterya</label>
@@ -170,6 +172,25 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         <div class="actions">
             <button class="btn-success" onclick="addPersonnel()">Kaydet</button>
             <button onclick="closeModal('personnelModal')">İptal</button>
+        </div>
+    </div>
+</div>
+
+<!-- PERSONEL DÜZENLEME MODALI -->
+<div class="modal" id="editModal">
+    <div class="modal-content">
+        <h2>Personel Bilgilerini Düzenle</h2>
+        <label>Personel Adı Soyadı</label>
+        <input id="editName" placeholder="Örn: Ahmet Yılmaz">
+        <label>Unvan</label>
+        <input id="editTitle" placeholder="Örn: Şef Garson">
+        <label>Görevi</label>
+        <input id="editJob" placeholder="Örn: Kafeterya Personeli">
+        <label>Kafeterya</label>
+        <select id="editCafeteria"></select>
+        <div class="actions">
+            <button class="btn-success" onclick="savePersonnel()">Değişiklikleri Kaydet</button>
+            <button onclick="closeModal('editModal')">İptal</button>
         </div>
     </div>
 </div>
@@ -233,13 +254,19 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
     const COLS = {
         id: "id",
         name: "Personel Adı Soyadı",
+        title: "Unvan",              // opsiyonel — tabloda yoksa kod çalışmaya devam eder
         job: "Görevi",
         cafeteria: "Kafeterya"
     };
 
     const CAFETERIA_COUNT = 70;
 
+    // Şema tespiti (ilk gelen kayıttan doldurulur)
+    let hasTitleColumn = null;       // null = bilinmiyor, true/false = tespit edildi
+    let cafeteriaValueType = null;   // "number" | "string" | null (bilinmiyor)
+
     let personnel = [];
+    let editingId = null;            // düzenleme modalındaki kaydın HAM id'si
     const cafeterias = [];
     for (let i = 1; i <= CAFETERIA_COUNT; i++) {
         cafeterias.push({ id: i, name: "Kafeterya " + i });
@@ -276,6 +303,84 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
 
     function personName(p) { return p && p[COLS.name] != null ? String(p[COLS.name]) : ""; }
     function personJob(p) { return p && p[COLS.job] != null ? String(p[COLS.job]) : ""; }
+    function personTitle(p) { return p && p[COLS.title] != null ? String(p[COLS.title]) : ""; }
+
+    // ID TİP GÜVENLİĞİ
+    // id kolonu uuid ise Number() dönüşümü eşleşmeyi bozar (NaN). Bu yüzden id ASLA
+    // Number()'a çevrilmez; select'ten gelen ham değer (uuid string / bigint number)
+    // saklanır ve .eq() çağrısına aynen gönderilir. DOM'dan gelen string sadece
+    // kaydı bulmak için String() karşılaştırmasında kullanılır.
+    function findPerson(id) {
+        return personnel.find(p => String(p[COLS.id]) === String(id));
+    }
+
+    function rawId(id) {
+        const p = findPerson(id);
+        return p ? p[COLS.id] : id;   // kayıt bulunamazsa DOM'dan gelen ham string
+    }
+
+    // "Kafeterya" kolonunun gerçek tipini ve "Unvan" kolonunun varlığını
+    // ilk gelen kayıttan tespit eder.
+    function detectSchema(rows) {
+        hasTitleColumn = rows.length ? Object.keys(rows[0]).includes(COLS.title) : null;
+
+        cafeteriaValueType = null;
+        for (const r of rows) {
+            const v = r[COLS.cafeteria];
+            if (v === null || v === undefined || v === "") continue;
+            cafeteriaValueType = (typeof v === "string") ? "string" : "number";
+            break;
+        }
+
+        console.log("[TEŞHİS] Kafeterya kolon tipi:", cafeteriaValueType || "tespit edilemedi (varsayılan: number)");
+        console.log("[TEŞHİS] '" + COLS.title + "' kolonu var mı:", hasTitleColumn);
+        if (rows.length && hasTitleColumn === false) {
+            console.warn("[TEŞHİS] '" + COLS.title + "' kolonu tabloda yok. CSV'de bu sütun boş kalacak. " +
+                         "Dosya sonundaki ALTER TABLE komutunu çalıştırın.");
+        }
+    }
+
+    // Yazma işlemlerinde kolonun gerçek tipine uygun değer üretir.
+    // Kolon text ise Number yazmak, integer ise String yazmak eşleşmeyi bozar.
+    function normalizeCafeteriaValue(selectValue) {
+        const id = parseCafeteriaId(selectValue);
+        if (id === null) return null;
+        return cafeteriaValueType === "string" ? String(id) : id;
+    }
+
+    // SESSİZ BAŞARISIZLIK KONTROLÜ
+    // update/delete çağrılarında RLS satırı kapsamıyorsa PostgREST error DÖNDÜRMEZ,
+    // sadece 0 satır etkilenir. Bu yüzden her update/delete'e .select() zincirlenir
+    // ve dönen dizinin uzunluğu burada kontrol edilir.
+    function checkWriteResult(op, rows, error, hint) {
+        if (error) {
+            console.error("[TEŞHİS] " + op + " — hata:", error);
+            alert(op + " başarısız: " + describeError(error).replace(/<[^>]*>/g, "") + (hint ? "\n" + hint : ""));
+            return false;
+        }
+
+        const n = Array.isArray(rows) ? rows.length : 0;
+        if (n === 0) {
+            console.warn("[TEŞHİS] " + op + " — 0 satır etkilendi. Dönen veri:", rows);
+            console.warn("[TEŞHİS] Olası sebepler: (1) '" + TBL_PERSONNEL + "' tablosunda UPDATE/DELETE policy yok, " +
+                         "(2) policy'nin USING koşulu bu satırı kapsamıyor, " +
+                         "(3) id eşleşmedi (uuid/bigint tip farkı), " +
+                         "(4) SELECT policy yok, bu yüzden etkilenen satır geri dönemiyor.");
+            alert("İşlem hiçbir satırı etkilemedi (RLS/UPDATE-DELETE policy eksik olabilir).\n\n" +
+                  "Tarayıcı konsolundaki [TEŞHİS] satırlarına ve dosya sonundaki policy SQL'lerine bakınız.");
+            return false;
+        }
+
+        console.log("[TEŞHİS] " + op + " — " + n + " satır etkilendi.", rows);
+        return true;
+    }
+
+    // 'Unvan' kolonu tabloda yoksa PostgREST PGRST204 döner; alan çıkarılıp tekrar denenir.
+    function isUnknownTitleColumnError(error) {
+        if (!error) return false;
+        const msg = String(error.message || "") + " " + String(error.details || "");
+        return error.code === "PGRST204" || msg.includes(COLS.title);
+    }
 
     function showNotice(target, type, html) {
         const el = document.getElementById(target === "staff" ? "staffNotice" : "adminNotice");
@@ -407,6 +512,11 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
             showNotice(target, "warn", "<strong>Sorgu başarılı fakat 0 kayıt döndü.</strong> Tabloda kayıt yoksa veya RLS policy eksikse bu uyarı görünür.");
             return true;
         }
+
+        console.log("[TEŞHİS] " + TBL_PERSONNEL + " ilk kayıt kolon adları:", Object.keys(rows[0]));
+        console.log("[TEŞHİS] id tipi:", typeof rows[0][COLS.id], "| örnek:", rows[0][COLS.id]);
+        detectSchema(rows);
+
         clearNotice(target);
         return true;
     }
@@ -517,12 +627,14 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
 
         const body = document.getElementById("cafeteriaModalBody");
         body.innerHTML = workers.length
-            ? '<div style="max-height: 350px; overflow-y: auto;"><table><thead><tr><th>Personel</th><th>Görev</th><th>İşlem</th></tr></thead><tbody>' +
+            ? '<div style="max-height: 350px; overflow-y: auto;"><table><thead><tr><th>Personel</th><th>Unvan</th><th>Görev</th><th>İşlem</th></tr></thead><tbody>' +
               workers.map(w =>
                 "<tr>" +
                     "<td><strong>" + escapeHtml(personName(w) || "(isimsiz)") + "</strong></td>" +
+                    "<td>" + escapeHtml(personTitle(w) || "-") + "</td>" +
                     "<td>" + escapeHtml(personJob(w) || "-") + "</td>" +
                     '<td><div class="actions">' +
+                        '<button class="btn-primary btn-sm" data-action="edit" data-id="' + escapeHtml(w[COLS.id]) + '">Düzenle</button>' +
                         '<button class="btn-success btn-sm" data-action="transfer" data-id="' + escapeHtml(w[COLS.id]) + '">Yer Değiştir</button>' +
                         '<button class="btn-danger btn-sm" data-action="delete" data-id="' + escapeHtml(w[COLS.id]) + '">Sil</button>' +
                     "</div></td>" +
@@ -558,9 +670,13 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
     function handleRowAction(e) {
         const btn = e.target.closest("button[data-action]");
         if (!btn) return;
-        const id = btn.getAttribute("data-id");
-        if (btn.getAttribute("data-action") === "delete") {
+        const id = btn.getAttribute("data-id");   // ham string — Number()'a çevrilmez
+        const action = btn.getAttribute("data-action");
+
+        if (action === "delete") {
             deletePersonnel(id);
+        } else if (action === "edit") {
+            openEditModal(id);
         } else {
             closeModal("cafeteriaModal");
             openTransferModal(id);
@@ -569,6 +685,7 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
 
     async function addPersonnel() {
         const name = document.getElementById("personName").value.trim();
+        const title = document.getElementById("personTitle").value.trim();
         const job = document.getElementById("personJob").value.trim();
         const cafeteria = document.getElementById("personCafeteria").value;
 
@@ -577,23 +694,41 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
             return;
         }
 
-        const payload = {
-            [COLS.name]: name,
-            [COLS.job]: job,
-            [COLS.cafeteria]: cafeteria ? Number(cafeteria) : null
-        };
-
         try {
-            const { error } = await _supabase.from(TBL_PERSONNEL).insert([payload]);
+            const payload = {
+                [COLS.name]: name,
+                [COLS.job]: job,
+                [COLS.cafeteria]: normalizeCafeteriaValue(cafeteria)
+            };
+            if (hasTitleColumn !== false) payload[COLS.title] = title || null;
+
+            // INSERT'te RLS engeli hata döndürür (42501), sessiz kalmaz; bu yüzden
+            // .select() zincirlenmez — SELECT policy yoksa boş dizi dönüp yanlış uyarı verirdi.
+            let { error } = await _supabase.from(TBL_PERSONNEL).insert([payload]);
+
+            // 'Unvan' kolonu tabloda yoksa alanı çıkarıp bir kez daha dene.
+            if (error && isUnknownTitleColumnError(error) && COLS.title in payload) {
+                console.warn("[TEŞHİS] '" + COLS.title + "' kolonu tabloda yok, alan çıkarılıp tekrar deneniyor. " +
+                             "Dosya sonundaki ALTER TABLE komutunu çalıştırın.");
+                hasTitleColumn = false;
+                delete payload[COLS.title];
+                ({ error } = await _supabase.from(TBL_PERSONNEL).insert([payload]));
+            }
+
             if (error) {
-                alert("Personel eklenirken hata oluştu: " + describeError(error));
+                console.error("[TEŞHİS] addPersonnel — hata:", error);
+                alert("Personel eklenirken hata oluştu: " + describeError(error).replace(/<[^>]*>/g, "") +
+                      "\n('" + TBL_PERSONNEL + "' tablosunda INSERT policy tanımlı mı?)");
                 return;
             }
+
             closeModal("personnelModal");
             document.getElementById("personName").value = "";
+            document.getElementById("personTitle").value = "";
             document.getElementById("personJob").value = "";
-            loadData();
+            await loadData();
         } catch (err) {
+            console.error("[TEŞHİS] addPersonnel:", err);
             alert("Beklenmeyen hata: " + (err && err.message ? err.message : err));
         }
     }
@@ -605,55 +740,140 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         openModal("personnelModal");
     }
 
+    function openEditModal(id) {
+        const p = findPerson(id);
+        if (!p) {
+            alert("Personel kaydı bulunamadı. Listeyi yenileyin.");
+            return;
+        }
+
+        editingId = p[COLS.id];   // HAM id saklanır — Number() uygulanmaz
+        document.getElementById("editName").value = personName(p);
+        document.getElementById("editTitle").value = personTitle(p);
+        document.getElementById("editJob").value = personJob(p);
+
+        document.getElementById("editCafeteria").innerHTML = '<option value="">Atanmamış</option>' +
+            cafeterias.map(c => '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>').join("");
+        const cafId = parseCafeteriaId(p[COLS.cafeteria]);
+        document.getElementById("editCafeteria").value = cafId === null ? "" : String(cafId);
+
+        closeModal("cafeteriaModal");
+        openModal("editModal");
+    }
+
+    async function savePersonnel() {
+        if (editingId === null) return;
+
+        const name = document.getElementById("editName").value.trim();
+        const title = document.getElementById("editTitle").value.trim();
+        const job = document.getElementById("editJob").value.trim();
+        const cafeteria = document.getElementById("editCafeteria").value;
+
+        if (!name) {
+            alert("Lütfen personel adını girin!");
+            return;
+        }
+
+        try {
+            const patch = {
+                [COLS.name]: name,
+                [COLS.job]: job,
+                [COLS.cafeteria]: normalizeCafeteriaValue(cafeteria)
+            };
+            if (hasTitleColumn !== false) patch[COLS.title] = title || null;
+
+            // id ham haliyle gönderilir (uuid string ya da bigint number) — Number() YOK.
+            let { data, error } = await _supabase.from(TBL_PERSONNEL)
+                .update(patch).eq(COLS.id, editingId).select();
+
+            if (error && isUnknownTitleColumnError(error) && COLS.title in patch) {
+                console.warn("[TEŞHİS] '" + COLS.title + "' kolonu tabloda yok, alan çıkarılıp tekrar deneniyor.");
+                hasTitleColumn = false;
+                delete patch[COLS.title];
+                ({ data, error } = await _supabase.from(TBL_PERSONNEL)
+                    .update(patch).eq(COLS.id, editingId).select());
+            }
+
+            if (!checkWriteResult("Güncelleme", data, error,
+                "('" + TBL_PERSONNEL + "' tablosunda UPDATE policy tanımlı mı?)")) return;
+
+            closeModal("editModal");
+            editingId = null;
+            await loadData();
+        } catch (err) {
+            console.error("[TEŞHİS] savePersonnel:", err);
+            alert("Beklenmeyen hata: " + (err && err.message ? err.message : err));
+        }
+    }
+
     async function deletePersonnel(id) {
         if (!confirm("Bu personeli silmek istediğinizden emin misiniz?")) return;
+
         try {
-            const { error } = await _supabase.from(TBL_PERSONNEL).delete().eq(COLS.id, id);
-            if (error) {
-                alert("Silme hatası: " + describeError(error));
-                return;
-            }
+            // .select() zincirlenir: dönen dizi boşsa hiçbir satır silinmemiştir.
+            const { data, error } = await _supabase.from(TBL_PERSONNEL)
+                .delete().eq(COLS.id, rawId(id)).select();
+
+            if (!checkWriteResult("Silme", data, error,
+                "('" + TBL_PERSONNEL + "' tablosunda DELETE policy tanımlı mı?)")) return;
+
             closeModal("cafeteriaModal");
-            loadData();
+            await loadData();
         } catch (err) {
+            console.error("[TEŞHİS] deletePersonnel:", err);
             alert("Beklenmeyen hata: " + (err && err.message ? err.message : err));
         }
     }
 
     function openTransferModal(preselectedId) {
+        if (!personnel.length) {
+            alert("Listede personel yok. Önce personel ekleyin veya verilerin yüklendiğinden emin olun.");
+            return; // boş select ile modal açma
+        }
+
         const pSelect = document.getElementById("transferPersonnelSelect");
-        pSelect.innerHTML = personnel.map(p => 
+        pSelect.innerHTML = personnel.map(p =>
             '<option value="' + escapeHtml(p[COLS.id]) + '"' + (String(p[COLS.id]) === String(preselectedId) ? ' selected' : '') + '>' +
-            escapeHtml(personName(p)) + ' (' + escapeHtml(getCafeteriaName(p[COLS.cafeteria])) + ')</option>'
+            escapeHtml(personName(p) || "(isimsiz)") + ' (' + escapeHtml(getCafeteriaName(p[COLS.cafeteria])) + ')</option>'
         ).join("");
 
+        // "Atanmamış" seçeneği: görev yerini kaldırıp null yazabilmek için.
         const cSelect = document.getElementById("transferCafeteria");
-        cSelect.innerHTML = cafeterias.map(c => '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>').join("");
+        cSelect.innerHTML = '<option value="">Atanmamış</option>' +
+            cafeterias.map(c => '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>').join("");
+
+        const current = findPerson(pSelect.value);
+        const cafId = current ? parseCafeteriaId(current[COLS.cafeteria]) : null;
+        cSelect.value = cafId === null ? "" : String(cafId);
 
         openModal("transferModal");
     }
 
     async function transferPersonnel() {
         const pId = document.getElementById("transferPersonnelSelect").value;
-        const newCafId = document.getElementById("transferCafeteria").value;
+        const newCafId = document.getElementById("transferCafeteria").value; // "" => Atanmamış
 
-        if (!pId || !newCafId) {
-            alert("Lütfen personel ve kafeterya seçin!");
+        if (!pId) {
+            alert("Lütfen personel seçin!");
             return;
         }
 
         try {
-            const { error } = await _supabase.from(TBL_PERSONNEL)
-                .update({ [COLS.cafeteria]: Number(newCafId) })
-                .eq(COLS.id, pId);
+            const patch = { [COLS.cafeteria]: normalizeCafeteriaValue(newCafId) };
 
-            if (error) {
-                alert("Yer değiştirme hatası: " + describeError(error));
-                return;
-            }
+            const { data, error } = await _supabase.from(TBL_PERSONNEL)
+                .update(patch).eq(COLS.id, rawId(pId)).select();
+
+            if (!checkWriteResult("Yer değiştirme", data, error,
+                "('" + TBL_PERSONNEL + "' tablosunda UPDATE policy tanımlı mı?)")) return;
+
             closeModal("transferModal");
-            loadData();
+            await loadData();
+            alert(patch[COLS.cafeteria] === null
+                ? "Personelin görev yeri kaldırıldı (Atanmamış)."
+                : "Personel başarıyla yeni kafeteryaya aktarıldı!");
         } catch (err) {
+            console.error("[TEŞHİS] transferPersonnel:", err);
             alert("Beklenmeyen hata: " + (err && err.message ? err.message : err));
         }
     }
@@ -687,44 +907,173 @@ input, select { width: 100%; padding: 11px; margin: 7px 0 15px; border: 1px soli
         }
     }
 
+    /* ------------------------------------------------------------------
+       CSV DIŞA AKTARIM
+       Kolonlar: Ad Soyad | Unvan | Görev | Kafeterya Birimi
+       Ayırıcı ';' (Excel TR varsayılanı), dosya UTF-8 BOM ile başlar.
+       Ekrandaki arama filtresi UYGULANMAZ.
+       ------------------------------------------------------------------ */
+    const CSV_SEP = ";";
+    const CSV_HEADER = ["Ad Soyad", "Unvan", "Görev", "Kafeterya Birimi"];
+
+    // Her alan tırnaklanır: içindeki " karakteri "" olarak ikilenir; satır sonları
+    // tırnak içinde korunur ve kolon/satır yapısını bozmaz.
+    function csvCell(v) {
+        const s = (v === null || v === undefined) ? "" : String(v);
+        return '"' + s.replace(/\r\n?/g, "\n").replace(/"/g, '""') + '"';
+    }
+
+    function csvRow(p, cafNameOverride) {
+        return [
+            csvCell(personName(p)),
+            csvCell(personTitle(p)),                                       // kolon yoksa boş kalır
+            csvCell(personJob(p)),
+            csvCell(cafNameOverride || getCafeteriaName(p[COLS.cafeteria])) // atanmamışsa "Atanmamış"
+        ].join(CSV_SEP);
+    }
+
+    function todayStamp() {
+        const d = new Date();
+        const pad = n => String(n).padStart(2, "0");
+        return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+    }
+
+    function downloadCsv(lines, fileName) {
+        const blob = new Blob(["\uFEFF" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
     function exportSingleCafeteriaExcel(cafId, cafName) {
         const workers = personnelOfCafeteria(cafId);
         if (!workers.length) {
-            alert("Bu kafeteryada dışa aktarılacak personel bulunmuyor.");
+            alert("Bu kafeteryada dışa aktarılacak personel bulunmuyor. Dosya oluşturulmadı.");
             return;
         }
 
-        let csv = "Personel Adi,Gorevi,Kafeterya\n";
-        workers.forEach(p => {
-            csv += `"${personName(p)}","${personJob(p)}","${cafName}"\n`;
-        });
+        const lines = [CSV_HEADER.map(csvCell).join(CSV_SEP)];
+        workers.forEach(p => lines.push(csvRow(p, cafName)));
 
-        const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${cafName.toLowerCase().replace(/\s+/g, '_')}_personel_listesi.csv`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        downloadCsv(lines, cafName.toLowerCase().replace(/\s+/g, "_") + "_personel_" + todayStamp() + ".csv");
     }
 
     function exportAllExcel() {
-        let csv = "Personel Adi,Gorevi,Kafeterya\n";
-        personnel.forEach(p => {
-            csv += `"${personName(p)}","${personJob(p)}","${getCafeteriaName(p[COLS.cafeteria])}"\n`;
-        });
+        if (!personnel.length) {
+            alert("Aktarılacak personel verisi bulunamadı! Dosya oluşturulmadı.");
+            return;
+        }
 
-        const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "tum_kafeterya_personel_listesi.csv";
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        const lines = [CSV_HEADER.map(csvCell).join(CSV_SEP)];
+        personnel.forEach(p => lines.push(csvRow(p)));
+
+        downloadCsv(lines, "kafeterya_personel_" + todayStamp() + ".csv");
     }
 </script>
+
+<!--
+================================================================================
+  GEREKLİ SUPABASE SQL'LERİ — Supabase panel > SQL Editor içinde çalıştırın.
+================================================================================
+
+-- ----------------------------------------------------------------------------
+-- 1) 'Unvan' KOLONU
+--    CSV'deki "Unvan" sütunu ve personel ekleme/düzenleme modalları bu kolonu
+--    kullanır. Kolon yokken uygulama patlamaz (PGRST204 yakalanır, alan
+--    çıkarılıp tekrar denenir); yalnızca CSV'de sütun boş kalır.
+-- ----------------------------------------------------------------------------
+
+alter table public.personnel add column if not exists "Unvan" text;
+
+-- NOT: Kolon adları Türkçe/boşluklu olduğu için SQL'de çift tırnak zorunludur.
+-- Şema farklıysa index.html içindeki COLS sabitini de güncelleyin.
+
+-- ----------------------------------------------------------------------------
+-- 2) RLS POLICY'LERİ
+--    "Yer değiştirme / silme çalışmıyor ama hata da vermiyor" sorununun sebebi:
+--    UPDATE veya DELETE policy yoksa PostgREST HATA DÖNDÜRMEZ, sadece 0 satır
+--    etkilenir. Uygulama bunu yakalamak için her update/delete'e .select()
+--    zincirler ve dönen dizi boşsa "İşlem hiçbir satırı etkilemedi" uyarısını
+--    gösterir.
+--
+--    ÖNEMLİ: .select() ile etkilenen satırın geri dönebilmesi için SELECT
+--    policy'si de gereklidir. Dört policy birlikte çalıştırılmalıdır.
+-- ----------------------------------------------------------------------------
+
+alter table public.personnel enable row level security;
+
+drop policy if exists "personnel_select_anon" on public.personnel;
+drop policy if exists "personnel_insert_anon" on public.personnel;
+drop policy if exists "personnel_update_anon" on public.personnel;
+drop policy if exists "personnel_delete_anon" on public.personnel;
+
+create policy "personnel_select_anon"
+    on public.personnel for select
+    to anon, authenticated
+    using (true);
+
+create policy "personnel_insert_anon"
+    on public.personnel for insert
+    to anon, authenticated
+    with check (true);
+
+create policy "personnel_update_anon"
+    on public.personnel for update
+    to anon, authenticated
+    using (true) with check (true);
+
+create policy "personnel_delete_anon"
+    on public.personnel for delete
+    to anon, authenticated
+    using (true);
+
+-- Tablo düzeyi yetkiler eksikse policy tek başına yetmez:
+grant usage on schema public to anon, authenticated;
+grant select, insert, update, delete on public.personnel to anon, authenticated;
+grant usage, select on all sequences in schema public to anon, authenticated;
+
+-- ----------------------------------------------------------------------------
+-- 3) users TABLOSU RLS
+--    GÜVENLİK: checkLogin() içinde sabit kodlanmış "admin/1234" girişi ve
+--    'users' tablosunda düz metin şifre karşılaştırması vardır. Bu yapı
+--    PRODUCTION İÇİN GÜVENLİ DEĞİLDİR; Supabase Auth'a (auth.users +
+--    profiles tablosu, signInWithPassword) geçilmelidir. Anon key public'tir,
+--    güvenliği yalnızca RLS sağlar — bu yüzden RLS her tabloda açık olmalıdır.
+-- ----------------------------------------------------------------------------
+
+alter table public.users enable row level security;
+
+drop policy if exists "users_select_anon" on public.users;
+drop policy if exists "users_insert_anon" on public.users;
+
+create policy "users_select_anon"
+    on public.users for select
+    to anon, authenticated
+    using (true);
+
+create policy "users_insert_anon"
+    on public.users for insert
+    to anon, authenticated
+    with check (true);
+
+-- ----------------------------------------------------------------------------
+-- 4) TEŞHİS SORGULARI
+-- ----------------------------------------------------------------------------
+
+-- Dört satır (SELECT/INSERT/UPDATE/DELETE) görünmelidir:
+-- select policyname, cmd, roles, qual, with_check from pg_policies
+--  where schemaname = 'public' and tablename in ('personnel','users');
+
+-- Gerçek kolon adları ve tipleri (COLS sabiti ile karşılaştırın):
+-- select column_name, data_type from information_schema.columns
+--  where table_schema = 'public' and table_name = 'personnel';
+================================================================================
+-->
 
 </body>
 </html>
